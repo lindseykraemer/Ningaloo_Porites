@@ -1,0 +1,1935 @@
+---
+title: "Phyloseq and DESeq2 Analysis"
+author: "Lindsey Kraemer"
+date: "2024-10-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Using updated host species ID from DJ 20/2/25
+
+# Time for Phyloseq
+
+Call libraries
+```{r}
+library(phyloseq); packageVersion("phyloseq") #'1.46.0'
+library(Biostrings); packageVersion("Biostrings") #'2.70.3'
+library(ggplot2); packageVersion("ggplot2") #'3.5.1'
+library(tidyverse); packageVersion("tidyverse") #‘2.0.0’
+#library(DECIPHER); packageVersion("DECIPHER") #‘2.30.0’
+#library(phangorn); packageVersion("phangorn") #‘2.11.1’
+library(ape); packageVersion("ape") #‘5.8’
+library(vegan); packageVersion("vegan") #‘2.6.4’
+library(knitr); packageVersion("knitr") #‘1.45’
+library(car); packageVersion("car") #‘3.1.2’
+library(gridExtra); packageVersion("gridExtra") #‘2.3’
+library(DESeq2); packageVersion("DESeq2") #‘1.42.1’
+library(vsn); package.version("vsn") #"3.70.0"
+library(ggh4x); packageVersion("ggh4x") #‘0.3.0’
+library(patchwork); packageVersion("patchwork") #‘1.2.0’
+library(cowplot); packageVersion("cowplot") #‘1.1.3’
+library(ggrepel); packageVersion("ggrepel") #‘0.9.6’
+
+#makes plots look nice
+theme_set(theme_bw())
+```
+
+call in ASVs, assigned taxonomy, and phylogenetic tree
+```{r}
+#ASVs
+ASV_full <- readRDS("round7_seqtab_nochim_full.rds")
+
+#call in taxa, this csv includes NAs classified through NCBI blast
+taxa <- read.csv("Full_Tax.csv") %>%
+  column_to_rownames("X") %>%
+  as.matrix()
+```
+
+#### Use 'Possible_Species' ID column for most updated host species ID
+
+call in metadata/sample info
+```{r}
+meta <- read_csv("porites_metadata.csv") %>%
+  as.data.frame() %>%
+  column_to_rownames("...1") %>%
+  select(c(2,3,6,8,11,14:21)) %>%
+  dplyr::rename(colonyID='Sample_Label_Processed') %>%
+  dplyr::mutate(Site = ifelse(Site %in% c("LAK", "TUR"), "LK/TR", Site))
+
+```
+
+Make a dataframe for geographic reference of sites (for ordering facet panels and legends by latitude)
+```{r}
+#create a data frame with site names, their corresponding latitudes, and longitudes
+site_order <- data.frame(
+  Site = c("BUN", "VLF", "OSP", "TAN", "MUI", "COR", "LK/TR"),
+  Latitude = c(-21.861278, -21.791944, -22.242778, -21.899167, -21.677889, -23.135694, -22.0675),
+  Longitude = c(114.15875, 114.175, 113.828889, 113.968333, 114.341361, 113.764, 113.897222)
+)
+
+#order the sites by latitude from northernmost to southernmost
+site_order <- site_order[order(-site_order$Latitude), ]
+```
+
+Define color palettes for variables for later plotting
+```{r}
+#host species
+species_colors <- c(
+  "P. lobata" = "#009E73",           
+  "P. lutea" =  "#D55E00"           
+)
+
+#site
+site_colors <- c(
+  "BUN" = "#CC79A7",  
+  "VLF" = "#92C46D",  
+  "OSP" = "#56B4E9",  
+  "TAN" = "#F4A582",  
+  "MUI" = "#882255",  
+  "COR" = "darkblue",  
+  "LK/TR" = "#A6761D"   
+)
+
+#number of heat stress events 
+dhw_colors <- c("1-3" = "#E0E0E0", 
+                     "3-6" = "#707070", 
+                     "6-9" = "#404040")
+
+#climatological temp range
+gradient_colors <- c("#9BB7D9", "#7171BB")
+
+#or more specifically based on shades from map
+#clim_colors <- c(
+#  "BUN" = "#7171BB",
+#  "VLF" = "#8D9ECE",
+#  "OSP" = "#8FA0CF",
+#  "TAN" = "#8E9FCF",
+#  "MUI" = "#8A99CC",
+#  "COR" = "#9BB7D9",
+#  "LK/TR" = "#8FA1D0"
+#)
+
+
+#taxa 
+#(Cladocopium ASVs: C15 variants (Orange / Yellow Tones), Thermotolerant Types (Red Tones), Thermosensitive Types (Blue Tones), Unknown Thermal Tolerance (Green Tones))
+ASV_colors <- c(
+  "C15" = "#E69F00",         
+  "C116" = "#D73027",        
+  "C15.6" = "#F28E2B",       
+  "C15h" = "#FFBF00",        
+  "C15.9" = "#E68310",       
+  "C56" = "#66A61E",         
+  "C55" = "#1B9E77",         
+  "C15.8" = "#FFA500",       
+  "C15.2.2" = "#E49B0F",     
+  "C15L" = "#F5B041",        
+  "C3" = "#0569AD",          
+  "C3w" = "#6A9EC2",         
+  "C15.2.1" = "#F29E38",     
+  "C15a" = "#FFB732",        
+  "C15.7" = "#FF8C00",       
+  "C15d" = "#FFB84D",        
+  "C60" = "#228B22",         
+  "C15i" = "#FFC857",        
+  "C15f" = "#FFAF3F",        
+  "C15m" = "#E89928",        
+  "C91b" = "#78C679",        
+  "C1" = "#377EB8",          
+  "C15.1" = "#EAA800",       
+  "C15c" = "#FFB74D",        
+  "C15g" = "#FDB462",        
+  "C3z" = "#5086B4",         
+  "C54a" = "#006D2C",        
+  "C91_C15" = "#FFDD71",     
+  "C91a" = "#31A354",        
+  "Cspe" = "#41AB5D",        
+  "Cspf" = "#2E8B57",        
+  "C15j" = "#FFAC3E",        
+  "C48" = "#5A9E6F",         
+  "C50"= "#4DBD33",          
+  "Cspc" = "#3E9141",        
+  "D5" = "#006400"           
+)
+```
+
+Create phyloseq object
+```{r}
+phylo <- phyloseq(otu_table(ASV_full, taxa_are_rows=FALSE), 
+                  sample_data(meta),
+                  tax_table(taxa))
+```
+
+Summary of read counts per sample
+```{r}
+sample_sum_ps <- data.frame(sum = sample_sums(phylo))
+summary(sample_sum_ps) #total read count across all samples
+sum(sample_sums(phylo))#8065014
+```
+
+To find SE of mean number of reads 
+```{r}
+nonchim_values <- sample_sum_ps$`sum`
+
+mean_nonchim <- mean(nonchim_values)
+sd_nonchim <- sd(nonchim_values)
+se_nonchim <- sd_nonchim / sqrt(length(nonchim_values))
+
+mean_nonchim #183295.8
+sd_nonchim #30014.84
+se_nonchim #4524.908
+```
+
+Are all ASVS observed across all samples?
+```{r}
+sum(taxa_sums(phylo) == 0) #yes
+```
+
+All samples have 100,000+ reads.
+
+Perform Analysis omitting Morphologically Unsure Hosts (anything with "cf") & P. australiensis
+
+These are: 
+
+NING-BUND-POR-1
+NING-BUND-POR-9
+NING-COR-POR-8
+NING-LAK-POR-3
+NING-LAK-POR-6
+NING-OSP-POR-3
+NING-TAN-POR-15
+
+
+```{r}
+new_phylo <- subset_samples(phylo, !(Possible_Species %in% c( "P. cf. lobata", "P. cf. lutea", "P. cf. solida", "P. australiensis"))) 
+
+sample_data(new_phylo)
+```
+There should be now 37 samples.
+
+## Pre-processing
+
+Remove those ASVs that were not observed in any of the current samples. 
+```{r}
+sum(taxa_sums(new_phylo) == 0) #184 not observed in any of current samples
+
+new_phylo <- prune_taxa(taxa_sums(new_phylo) > 0, new_phylo) #pruned version
+
+new_phylo #there should still be 37 samples, and 1001 (1185-184) taxa
+```
+
+summary of read counts
+```{r}
+sample_sum_new <- data.frame(sum = sample_sums(new_phylo))
+summary(sample_sum_new)
+
+#check for any patterns in read count across site and host
+read_meta <- sample_sum_new %>%
+  dplyr::rename("Number of Reads"="sum")
+read_meta$Site <- sample_data(new_phylo)$Site
+read_meta$Host <- sample_data(new_phylo)$Possible_Species
+read_meta$`Number of Accumulated Heat Stress Events` <- sample_data(new_phylo)$DHW_8
+
+read_meta <- rownames_to_column(read_meta) %>%
+  dplyr::rename("Sample"="rowname")
+
+write_csv(read_meta, file = "read_count_per_sample.csv")
+
+#total sum of reads
+sum(sample_sums(new_phylo)) #6833662 total reads
+```
+To find SE of mean number of reads 
+```{r}
+nonchim_values <- read_meta$`Number of Reads`
+
+mean_nonchim <- mean(nonchim_values)
+sd_nonchim <- sd(nonchim_values)
+se_nonchim <- sd_nonchim / sqrt(length(nonchim_values))
+
+mean_nonchim #184693.6
+sd_nonchim #30090.36
+se_nonchim #4946.824
+```
+
+
+## Add in reference sequences
+
+```{r}
+dna <- Biostrings::DNAStringSet(taxa_names(new_phylo))
+names(dna) <- taxa_names(new_phylo)
+new_phylo <- merge_phyloseq(new_phylo, dna)
+taxa_names(new_phylo) <- paste0("ASV", seq(ntaxa(new_phylo))) #ASV id as 'ASV1'... easier to read vs full sequence
+new_phylo
+```
+
+## Adding a phylogenetic tree
+
+```{r}
+#load the tree from the Newick file
+p_tree <- read.tree("phylogenetic_tree.newick")
+```
+
+Now merge with new data
+```{r}
+new_phylo = merge_phyloseq(new_phylo, p_tree)
+new_phylo
+
+#and save RDS so reproducible
+#saveRDS(new_phylo, file = "new_phylo.rds")
+```
+
+If you need to load phyloseq object later...
+```{r}
+#new_phylo <- readRDS("new_phylo.rds")
+```
+
+
+How many ASVs map to each ITS2_type?
+```{r}
+rank_names(new_phylo)
+
+#calculate the counts of each "ITS2_type"
+its2_counts <- as.data.frame(table(tax_table(new_phylo)[, "ITS2_type"], exclude = NULL))
+colnames(its2_counts) <- c("ITS2_type", "Count")
+```
+Most map to C15, then C116, C15.6, C15h, C15. 9, C56, C55, C15.8....
+There are 25 identified ITS2_types. Only one ASV was observed for 2 ITS2_types (C15j, C50). 
+
+
+## Determining Prevalence and Total Abundance of ITS2 types across entire dataset
+
+Explore feature prevalence (# of samples in which a taxon appears at least once) in the dataset 
+```{r}
+#compute prevalence of each feature, store as data.frame
+prevdf = apply(X = otu_table(new_phylo),
+                 MARGIN = ifelse(taxa_are_rows(new_phylo), yes = 1, no = 2),
+                 FUN = function(x){sum(x > 0)})
+#add taxonomy and total read counts to this data.frame
+prevdf = data.frame(Prevalence = prevdf,
+                      TotalAbundance = taxa_sums(new_phylo),
+                      tax_table(new_phylo))
+
+#merge the counts back into your original data frame
+prevdf <- prevdf %>%
+  left_join(its2_counts, by = "ITS2_type")
+
+#create a new facet label with the counts
+prevdf <- prevdf %>%
+  mutate(FacetLabel = paste0(ITS2_type, " (", Count, " ASVs)"))
+```
+
+Compute the total and average prevalences of the features in each taxa.
+```{r}
+plyr::ddply(prevdf, "ITS2_type", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+```
+
+Explore the relationship of prevalence and total read count for each taxon.
+```{r}
+#arrange facets by total prevalence
+prevdf <- prevdf %>%
+  group_by(ITS2_type) %>%
+  mutate(TotalPrevalence = sum(Prevalence)) %>%
+  ungroup() %>%
+  mutate(FacetLabel = fct_reorder(FacetLabel, -TotalPrevalence)) #ordering by descending TotalPrevalence
+
+#plot
+ggplot(prevdf, aes(TotalAbundance, Prevalence / nsamples(new_phylo), color = ITS2_type)) +
+  geom_hline(yintercept = 0.05, alpha = 0.5, linetype = 2) +
+  geom_point(size = 2, alpha = 0.7) +
+  scale_x_log10() +
+  xlab("Total Abundance (read count)") +
+  ylab("Prevalence (Fraction of Samples)") +  
+  facet_wrap(~FacetLabel) +
+  scale_color_manual(values = ASV_colors) + 
+  theme_bw() + 
+  theme(legend.position = "none")
+```
+
+Determine which symbiont taxa are in each sample
+```{r}
+#extract ASV table
+otu_table_data <- otu_table(new_phylo)
+otu_table_data <- t(otu_table_data)
+
+#extract taxonomic table
+tax_table_data <- tax_table(new_phylo)
+
+#convert to data frames
+otu_df <- as.data.frame(otu_table_data)
+tax_df <- as.data.frame(tax_table_data)
+
+#ensure the row names (OTU IDs) match between the ASV and tax tables
+otu_df$OTU <- rownames(otu_df)
+tax_df$OTU <- rownames(tax_df)
+
+#merge OTU and taxonomic tables on OTU ID
+merged_df <- merge(otu_df, tax_df, by = "OTU")
+
+#create a logical matrix indicating presence (TRUE) or absence (FALSE) of each OTU
+taxa_presence <- merged_df[, -1] > 0  #exclude the first column which is OTU
+
+#extract ITS2_type (taxon) names
+taxa_names <- merged_df$ITS2_type
+
+#initialise an empty list to store taxa present in each sample
+taxa_in_samples <- vector("list", ncol(otu_df) - 1)
+
+#populate the list with taxa names for each sample
+for (i in seq_along(taxa_in_samples)) {
+  sample_name <- colnames(otu_df)[i]
+  taxa_in_samples[[i]] <- unique(taxa_names[taxa_presence[, i]])
+  names(taxa_in_samples)[i] <- sample_name
+}
+
+#convert taxa_in_samples to a data frame in wide format
+taxa_df_wide <- data.frame(
+  Sample = names(taxa_in_samples),
+  Cladocopium_taxa = sapply(taxa_in_samples, function(x) paste(x, collapse = ", "))
+)
+
+#add a column for the number of unique taxa in each sample
+taxa_df_wide$Num_taxa <- sapply(taxa_in_samples, function(x) length(unique(x)))
+
+#write.csv(taxa_df_wide, "taxa_in_samples_wide.csv", row.names = FALSE)
+```
+
+Create one table with info on read count and symbiont taxa present
+```{r}
+read_taxa_merge <- merge(read_meta, taxa_df_wide, by = "Sample")
+
+write.csv(read_taxa_merge, "read_count_taxa_merged.csv", row.names = FALSE)
+```
+
+Calculate the stats for symbiont taxa per site
+```{r}
+#calculate summary statistics for Num_taxa per Site
+summary_stats <- read_taxa_merge %>%
+  group_by(Site) %>%
+  summarise(
+    Mean = mean(Num_taxa),
+    SE = sd(Num_taxa) / sqrt(n()),
+    Min = min(Num_taxa),
+    Max = max(Num_taxa)
+  )
+
+print(summary_stats)
+
+write.csv(summary_stats, "sym_taxa_per_site.csv", row.names = FALSE)
+```
+
+Calculate the stats for symbiont taxa per host species
+```{r}
+#calculate summary statistics for Num_taxa per host
+summary_stats1 <- read_taxa_merge %>%
+  group_by(Host) %>%
+  summarise(
+    Mean = mean(Num_taxa),
+    SE = sd(Num_taxa) / sqrt(n()),
+    Min = min(Num_taxa),
+    Max = max(Num_taxa)
+  )
+
+print(summary_stats1)
+
+write.csv(summary_stats1, "sym_taxa_per_host.csv", row.names = FALSE)
+```
+
+Calculate the stats for symbiont taxa per no. of accum. heat stress events
+```{r}
+#calculate summary statistics for Num_taxa per no. of accum. heat stress events
+summary_stats2 <- read_taxa_merge %>%
+  group_by(`Number of Accumulated Heat Stress Events`) %>%
+  summarise(
+    Mean = mean(Num_taxa),
+    SE = sd(Num_taxa) / sqrt(n()),
+    Min = min(Num_taxa),
+    Max = max(Num_taxa)
+  )
+
+print(summary_stats2)
+
+write.csv(summary_stats2, "sym_taxa_per_dhw.csv", row.names = FALSE)
+```
+
+## Determining Prevalence and Relative Abundance of each ITS2 Type across Samples that they are found in  
+```{r}
+#compute prevalence of each feature, store as df
+prevdf = apply(X = otu_table(new_phylo),
+               MARGIN = ifelse(taxa_are_rows(new_phylo), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+#add taxonomy and total read counts to this df
+prevdf = data.frame(Prevalence = prevdf,
+                    TotalAbundance = taxa_sums(new_phylo),
+                    tax_table(new_phylo)) %>%
+  rownames_to_column() %>%
+  dplyr::rename(OTU='rowname')
+
+prev_otu <- prevdf %>%
+  left_join( otu_df, by = "OTU") %>%
+  tidyr::pivot_longer(cols = c(5:41), names_to = "Sample", values_to = "ASV_count_per_sample") %>%
+  filter(ASV_count_per_sample != 0) %>%
+  group_by(Sample) %>%
+  mutate(Total_reads_per_sample = sum(ASV_count_per_sample)) %>%
+  mutate(ITS2_diversity_per_sample = n_distinct(ITS2_type)) 
+
+#compute total OTUs per sample 
+  otu_per_sample <- prev_otu %>%
+    group_by(Sample) %>%
+    summarise(Total_OTUs = n_distinct(OTU))
+
+#find abundance of each ITS2 type that ASVs map to within each sample
+prev_otu2 <- prev_otu %>%
+  group_by(Sample, ITS2_type) %>%
+  mutate(Total_ITS2_count_per_sample = sum(ASV_count_per_sample)) %>%
+  mutate(abundance_per_sample = Total_ITS2_count_per_sample / Total_reads_per_sample) %>%
+  summarize(abundance_per_sample = mean(abundance_per_sample), .groups = "keep") %>%
+  ungroup()
+
+#find relative abundance of each ITS2 type across samples that it's found in (plus SE)
+prev_otu3 <- prev_otu2 %>%
+  group_by(ITS2_type) %>%
+  summarize(mean_abund = mean_se(abundance_per_sample)) %>%
+  mutate(se_abund = mean_abund$y - mean_abund$ymin) %>%
+  arrange(desc(mean_abund))
+
+#extract prevalence data for each ITS2 type (not just specific ASVs) and combine into df with relative abundance
+prev_otu4 <- prev_otu %>%
+  group_by(ITS2_type) %>%
+  mutate(Prevalence = n_distinct(Sample)) %>%
+  summarize(Prevalence = max(Prevalence)) %>%
+  left_join(prev_otu3, by = "ITS2_type") %>%
+  arrange(desc(Prevalence)) 
+
+write.csv(prev_otu4, file = "prevalence_abundance.csv")
+```
+
+## Rarefaction Analysis
+
+Test if there is any differences between the species compositions GIVEN the differences in sample number (sampling depth).
+```{r}
+#extract OTU table from new_phylo object
+otu.norm <- otu_table(new_phylo) %>%
+  as.data.frame() 
+
+#non-rarefied data
+rarecurve(otu.norm, step = 1000, label = T, xlab = "Number of Reads", ylab = "Number of Observed Taxa") 
+```
+
+## Alpha Diversity
+
+First create a joint dataframe of sample data and diversity info
+```{r}
+#make df of diversity metrics
+est_rich <- estimate_richness(new_phylo, measures=c("Shannon", "Simpson"))
+
+SampleID <- row.names(est_rich) 
+
+#makes a new df with the specified columns
+alpha <- data.frame(SampleID, est_rich) 
+s <- data.frame(sample_data(new_phylo)) %>%
+  rownames_to_column() %>%
+  dplyr::rename(SampleID='rowname') #change first column title to SampleID to match diversity df
+
+write.csv(alpha, "alpha_diversity.csv", row.names = FALSE)
+
+#merge metadata and alpha div metrics
+alpha_newphylo <- alpha %>%
+  left_join(s, by = "SampleID")
+```
+
+Assumption 1) test for normal distribution
+```{r}
+#library(knitr)
+
+#perform Shapiro-Wilk normality tests
+shannon_test <- shapiro.test(alpha_newphylo$Shannon) #normal
+simpson_test <- shapiro.test(alpha_newphylo$Simpson) #normal
+
+#create a df with the results
+results <- data.frame(
+  Metric = c("Shannon", "Simpson"),
+  W = c(shannon_test$statistic, simpson_test$statistic),
+  p_value = c(shannon_test$p.value, simpson_test$p.value)
+)
+
+#write the df to a CSV file
+write.csv(results, "alpha_shapiro_test_results.csv", row.names = FALSE)
+
+#and visually check by Q-Q plot
+
+#set up the plotting area to have 1 row and 2 columns
+par(mfrow = c(1, 2))
+
+#Q-Q plot for Shannon Diversity
+qqnorm(alpha_newphylo$Shannon, main = "Q-Q Plot of Shannon Diversity", xlab = "Theoretical Quantiles", ylab = "Sample Quantiles")
+qqline(alpha_newphylo$Shannon)
+
+#Q-Q plot for Simpson Diversity
+qqnorm(alpha_newphylo$Simpson, main = "Q-Q Plot of Simpson Diversity", xlab = "Theoretical Quantiles", ylab = "Sample Quantiles")
+qqline(alpha_newphylo$Simpson)
+
+#reset plotting area to default
+par(mfrow = c(1, 1))
+```
+
+Creating a function to determine SE when figuring out mean diversity
+```{r}
+calc_se <- function(x) {
+  return(sd(x, na.rm = TRUE) / sqrt(length(na.omit(x))))
+}
+```
+
+
+Creating a function to perform Welch's ANOVA on multifactor (3+) variables
+```{r}
+#library(car)
+
+perform_welch_anova <- function(alpha_newphylo, factor_name, shannon_col = "Shannon", simpson_col = "Simpson") {
+  
+  mean_se_shannon <- alpha_newphylo %>%
+    group_by(!!sym(factor_name)) %>%
+    summarise(
+      Mean_Shannon = mean(!!sym(shannon_col), na.rm = TRUE),
+      SE_Shannon = calc_se(!!sym(shannon_col))
+    )
+  
+  mean_se_simpson <- alpha_newphylo %>%
+    group_by(!!sym(factor_name)) %>%
+    summarise(
+      Mean_Simpson = mean(!!sym(simpson_col), na.rm = TRUE),
+      SE_Simpson = calc_se(!!sym(simpson_col))
+    )
+  
+  #combine the two (Shannon & Simpson) into one table
+  combined_means_se <- full_join(mean_se_shannon, mean_se_simpson, by = factor_name)
+  
+  #save as CSV
+  write.csv(combined_means_se, paste0("mean_se_diversity_by_", factor_name, ".csv"), row.names = FALSE)
+  
+  print(combined_means_se)
+  
+  #continue running Levene's Test and Welch's ANOVA 
+  levene_test_shannon <- leveneTest(as.formula(paste(shannon_col, "~", factor_name)), data = alpha_newphylo)
+  levene_test_simpson <- leveneTest(as.formula(paste(simpson_col, "~", factor_name)), data = alpha_newphylo)
+
+  levene_results <- data.frame(
+    Metric = c("Shannon", "Simpson"),
+    Df_Group = c(levene_test_shannon$Df[1], levene_test_simpson$Df[1]),
+    Df_Residual = c(levene_test_shannon$Df[2], levene_test_simpson$Df[2]),
+    F_Value = c(levene_test_shannon$`F value`[1], levene_test_simpson$`F value`[1]),
+    P_Value = c(levene_test_shannon$`Pr(>F)`[1], levene_test_simpson$`Pr(>F)`[1])
+  )
+  
+  write.csv(levene_results, paste0("levene_test_results_", factor_name, ".csv"), row.names = FALSE)
+
+  anova_shannon <- oneway.test(as.formula(paste(shannon_col, "~", factor_name)), data = alpha_newphylo, var.equal = FALSE)
+  anova_simpson <- oneway.test(as.formula(paste(simpson_col, "~", factor_name)), data = alpha_newphylo, var.equal = FALSE)
+
+  anova_results <- data.frame(
+    Metric = c("Shannon", "Simpson"),
+    F_value = c(anova_shannon$statistic, anova_simpson$statistic),
+    num_df = c(anova_shannon$parameter[1], anova_simpson$parameter[1]),
+    denom_df = c(anova_shannon$parameter[2], anova_simpson$parameter[2]),
+    p_value = c(anova_shannon$p.value, anova_simpson$p.value)
+  )
+
+  write.csv(anova_results, paste0("welch_anova_results_", factor_name, ".csv"), row.names = FALSE)
+
+  print(anova_results)
+}
+```
+
+Perform function on multifactor (3+) variables or variables with unequal variance (from Levene's test results)
+```{r}
+#for Site
+perform_welch_anova(
+  alpha_newphylo = alpha_newphylo, 
+  factor_name = "Site"
+)
+
+#for DHW_8 
+perform_welch_anova(
+  alpha_newphylo = alpha_newphylo, 
+  factor_name = "DHW_8"
+)
+```
+
+Creating a function for performing Levene's test and independent t-test for two-factor variables
+```{r}
+#load packages
+#library(gridExtra)
+
+#define a function that performs t-test for Shannon and Simpson diversity indices
+analyze_factor <- function(alpha_newphylo, factor_name, factor_levels, shannon_col = "Shannon", simpson_col = "Simpson") {
+  
+  alpha_newphylo[[factor_name]] <- factor(alpha_newphylo[[factor_name]], levels = factor_levels)
+  
+  mean_se_shannon <- alpha_newphylo %>%
+    group_by(!!sym(factor_name)) %>%
+    summarise(
+      Mean_Shannon = mean(!!sym(shannon_col), na.rm = TRUE),
+      SE_Shannon = calc_se(!!sym(shannon_col))
+    )
+  
+  mean_se_simpson <- alpha_newphylo %>%
+    group_by(!!sym(factor_name)) %>%
+    summarise(
+      Mean_Simpson = mean(!!sym(simpson_col), na.rm = TRUE),
+      SE_Simpson = calc_se(!!sym(simpson_col))
+    )
+  
+  combined_means_se <- full_join(mean_se_shannon, mean_se_simpson, by = factor_name)
+
+  write.csv(combined_means_se, paste0("mean_se_diversity_by_", factor_name, ".csv"), row.names = FALSE)
+  
+  print(combined_means_se)
+  
+  #Levene’s test and t-test
+  levene_test_shannon <- leveneTest(as.formula(paste(shannon_col, "~", factor_name)), data = alpha_newphylo)
+  levene_test_simpson <- leveneTest(as.formula(paste(simpson_col, "~", factor_name)), data = alpha_newphylo)
+
+  t_test_shannon <- t.test(as.formula(paste(shannon_col, "~", factor_name)), data = alpha_newphylo)
+  t_test_simpson <- t.test(as.formula(paste(simpson_col, "~", factor_name)), data = alpha_newphylo)
+
+  t_test_results <- data.frame(
+    Metric = c("Shannon", "Simpson"),
+    t_value = c(t_test_shannon$statistic, t_test_simpson$statistic),
+    df = c(t_test_shannon$parameter, t_test_simpson$parameter),
+    p_value = c(t_test_shannon$p.value, t_test_simpson$p.value),
+    conf_low = c(t_test_shannon$conf.int[1], t_test_simpson$conf.int[1]),
+    conf_high = c(t_test_shannon$conf.int[2], t_test_simpson$conf.int[2]),
+    mean_group1 = c(t_test_shannon$estimate[1], t_test_simpson$estimate[1]),
+    mean_group2 = c(t_test_shannon$estimate[2], t_test_simpson$estimate[2])
+  )
+
+  write.csv(t_test_results, paste0("t_test_results_", factor_name, ".csv"), row.names = FALSE)
+
+  print(t_test_results)
+}
+```
+
+Run t-test function for variables with 2 factors
+```{r}
+#for host species
+analyze_factor(
+  alpha_newphylo = alpha_newphylo, 
+  factor_name = "Possible_Species", 
+  factor_levels = c("P. lobata", "P. lutea")
+)
+```
+
+Creating a function to plot both alpha diversity metrics for each categorical factor.
+```{r}
+plot_alpha_diversity <- function(data, x_var, colors, color_label, 
+                                 p_value_shannon, p_value_simpson, 
+                                 ylab_shannon = "Shannon", ylab_simpson = "Simpson") {
+  
+  #Shannon Diversity Plot
+  shan_sort <- plot_richness(data, x = x_var, measures = "Shannon", color = x_var, sortby = "Shannon") +
+    theme_bw() +
+    labs(color = color_label) +
+    geom_point(size = 3) +
+    xlab(NULL) +
+    theme(axis.text.x = element_text(size = 10, angle = 90, hjust = 1, margin = margin(t = 10)),
+          axis.text.y = element_text(size = 10),
+          axis.title.y = element_text(size = 10),
+          legend.position = "bottom",
+          panel.grid = element_blank()) + 
+    geom_boxplot(aes_string(x = x_var, y = "value", color = "NULL"), alpha = 0.1) +
+    scale_color_manual(values = colors) +
+    ylab(ylab_shannon) +
+    annotate("text", x = -Inf, y = -Inf, 
+             label = paste("italic(p) * '-value =' ~", format(p_value_shannon, digits = 3)), 
+             parse = TRUE, hjust = -0.02, vjust = -0.02, size = 4)
+  
+  #Simpson Diversity Plot
+  simp_sort <- plot_richness(data, x = x_var, measures = "Simpson", color = x_var, sortby = "Simpson") +
+    theme_bw() +
+    labs(color = color_label) +
+    geom_point(size = 3) +
+    xlab(NULL) +
+    ylab(ylab_simpson) +
+    theme(axis.text.x = element_text(size = 10, angle = 90, hjust = 1, margin = margin(t = 10)),
+          axis.text.y = element_text(size = 10),
+          axis.title.y = element_text(size = 10),
+          panel.grid = element_blank()) +
+    geom_boxplot(aes_string(x = x_var, y = "value", color = "NULL"), alpha = 0.1) +
+    scale_color_manual(values = colors) +
+    guides(color = FALSE) +
+    annotate("text", x = -Inf, y = -Inf, 
+             label = paste("italic(p) * '-value =' ~", format(p_value_simpson, digits = 3)), 
+             parse = TRUE, hjust = -0.02, vjust = -0.02, size = 4)
+  
+  #extract legend
+  get_legend <- function(myggplot) {
+    tmp <- ggplot_gtable(ggplot_build(myggplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+  }
+  
+  #get legend from Shannon plot
+  legend <- get_legend(shan_sort + theme(legend.position = "bottom", legend.direction = "horizontal", legend.box = "horizontal"))
+  
+  #arrange the plots and legend
+  combined_plot <- grid.arrange(
+    arrangeGrob(shan_sort + theme(legend.position = "none", plot.margin = margin(b = 20, unit = "pt")),
+                 simp_sort + theme(plot.margin = margin(b = 20, unit = "pt")),
+                 ncol = 2),
+    legend,
+    nrow = 2,
+    heights = c(10, 1)
+  )
+  
+  return(combined_plot)
+}
+```
+
+
+Now running the above function for categorical factors
+```{r}
+#Shannon and Simpson p-values for host species
+p_value_shannon_spp <- 0.359
+p_value_simpson_spp <- 0.929
+
+alpha_spp <- plot_alpha_diversity(new_phylo, 
+                                   "Possible_Species", 
+                                   species_colors, 
+                                   "Morphologic Host Species", 
+                                   p_value_shannon = p_value_shannon_spp, 
+                                   p_value_simpson = p_value_simpson_spp)
+
+#Shannon and Simpson p-values for site
+p_value_shannon_site <- 0.893
+p_value_simpson_site <- 0.928
+
+alpha_site <- plot_alpha_diversity(new_phylo, 
+                                   "Site", 
+                                   site_colors, 
+                                   "Collection Site", 
+                                   p_value_shannon = p_value_shannon_site, 
+                                   p_value_simpson = p_value_simpson_site)
+
+#Shannon and Simpson p-values for DHW ≥ 8°C-weeks
+p_value_shannon_dhw <- 0.636
+p_value_simpson_dhw <- 0.788
+
+alpha_dhw <- plot_alpha_diversity(new_phylo, 
+                                  "DHW_8", 
+                                  dhw_colors, 
+                                  "Number of Accumulated Heat Stress Events (DHW ≥ 8°C-weeks)", 
+                                  p_value_shannon = p_value_shannon_dhw, 
+                                  p_value_simpson = p_value_simpson_dhw)
+
+```
+
+```{r}
+#combine all panels with cowplot
+alpha_combined <- plot_grid(
+  alpha_spp, alpha_site, alpha_dhw,
+  labels = c("(a)", "(b)", "(c)"), 
+  nrow = 3,
+  align = "v", 
+  label_fontface = "bold"
+)
+
+#save plot as an image
+ggsave("combined_alpha_plots.png", alpha_combined, width = 12, height = 18, units = "in")
+```
+
+
+# DESeq2 
+
+DESeq2 package allows you to perform variance stabilisation and differential abundance testing. NOTE: These are NOT one in the same. 
+
+Had to do this because DESeq2 isn't available on this version of R/4.3.2
+```{r, eval= FALSE}
+#if (!require("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("DESeq2")
+```
+
+ I will 1) generate variance stabilised data and 2) perform differential abundance analysis
+
+## Generating variance stabilised data without specific formula
+for the purpose of observing VST abundances across samples 
+
+## Creating a DESeqDataSet
+
+Using `~1` as the design
+
+```{r}
+#library("DESeq2")
+dds <- phyloseq_to_deseq2(new_phylo, ~1)
+dds
+```
+
+Check counts - should be the same as exploratory analysis in phyloseq
+```{r}
+counts <-counts(dds) #how many reads were sequenced for each sample? (=library sizes)
+colSums(counts(dds)) %>% barplot(las=2)
+```
+Pre-processing check
+```{r}
+dim(dds)
+#remove ASVs with no reads
+keep <-rowSums(counts(dds)) > 0
+dds <- dds[keep, ]
+dim(dds)
+#still the same , all ASVs had reads
+```
+There are ASVs that are present in some samples and not in others, as shown by `counts`. If you try to run `estimateSizeFactors` with the data as is, you will get this error:
+
+"Error in estimateSizeFactorsForMatrix(counts(object), locfunc = locfunc,  : 
+  every gene contains at least one zero, cannot compute log geometric means"
+  
+As explained by [Paul J. McMurdie](https://github.com/joey711/phyloseq/issues/283) "you need to provide you own geometric means (calculated in a manner that is tolerant of zeros)... or include pseudocount at the step that calculates geometric means. The strict definition of geometric mean includes a product of its terms, so one zero in the bunch will result in a zero value. For real data, and this data especially, we expect occasional zeros, so one of these approaches is necessary for the geometric mean to be useful."
+
+Solution found in this [vignette](https://www.bioconductor.org/packages/release/bioc/vignettes/phyloseq/inst/doc/phyloseq-mixture-models.html). 
+
+```{r}
+#calculate the geometric mean
+gm_mean <- function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+#calculate the geometric mean for each ASV using the above function
+#function per row (this is what the second parameter, 1, indicates)
+geoMeans <- apply(counts(dds), 1, gm_mean) 
+```
+
+Estimate size factors are scaling factors used as "offsets" by the statistical model to make the different samples comparable. This is necessary because the different samples may have been sequenced to slightly different depths.
+```{r}
+dds <- estimateSizeFactors(dds, geoMeans = geoMeans) #calculate SFs, add them to object
+
+plot( sizeFactors(dds), colSums(counts(dds)), #assess them
+ylab = "library sizes", xlab = "size factors", cex = .6 )
+```
+Most SF fall <=2
+
+Q-Q plot to see if the data follows a normal distribution
+```{r}
+qqnorm(sizeFactors(dds))
+qqline(sizeFactors(dds), col="red")
+```
+
+The DESeq() function estimates size factors, dispersions, and fits the negative binomial model, this is necessary for the `VST()` to stabilize variance correctly. 
+
+To determine whether to set fitType to "parametric" or "local" in DESeq2
+```{r}
+#run DESeq to estimate dispersions, etc
+dds_p <- DESeq(dds, fitType = "parametric")
+plotDispEsts(dds_p)
+
+
+dds_l <- DESeq(dds, fitType = "local")
+plotDispEsts(dds_l)
+```
+Local = More Adaptive Fit: The fitted line (red) in the local fit plot is also relatively flat, but it might capture some nuances that the parametric fit does not.
+
+
+## Perform variance stabilizing transformation
+
+```{r}
+vst_dds <- varianceStabilizingTransformation(dds_l, blind = TRUE)
+
+#to inspect this transformation
+head(assay(vst_dds), 3)
+```
+
+Also want to try these other transformations just to see...
+```{r}
+#shifted log transformation- this gives log2(n + 1)
+ntd <- normTransform(dds_l)
+
+#regularized log transformation
+rld <- rlog(dds_l)
+#OUTPUT: DESeq2 does not recommend rlog for this data
+```
+
+QAQC for VST data
+```{r}
+#inspect new count abundance 
+abund_sums <-data.frame(sum = colSums(assay(vst_dds), na.rm = TRUE),
+                          sample = colnames(assay(vst_dds)),
+                          type = "DESeq2")
+
+ggplot(abund_sums) +
+  geom_histogram(aes(x = sum), binwidth = 20) +
+  xlab("Total abundance within sample")
+
+#Q-Q plot
+qqnorm(abund_sums$sum, main = "Q-Q Plot of Total Abundance (vst)")
+qqline(abund_sums$sum, col = "red")
+#skewed to the left slightly
+#while VST has improved the normalization, there are still some deviations from normality
+```
+
+Standard deviation plot to see diffferences... 
+```{r}
+library("vsn"); package.version("vsn") #"3.70.0"
+
+meanSdPlot(assay(dds))
+
+meanSdPlot(assay(vst_dds)) 
+
+meanSdPlot(assay(ntd)) 
+#rank trend looks similar, The sd of this goes up to ~6 vs the vst_dds goes up to ~10
+
+meanSdPlot(assay(rld)) 
+#not good, very scary plot
+```
+
+### Continuing with variance stabilised transformation
+
+Now replace the original OTU abundances in a copy of new_phylo with vst abundances. 
+
+Step 1: Call the copy new_phylo0. 
+```{r}
+#create copy of phyloseq object
+new_phylo0 <- new_phylo
+```
+
+Step 2: The `assay` function is used to extract the matrix of transformed values.
+```{r}
+vst_assay <- assay(vst_dds)
+#this will be variance stabilised OTU table to merge with PHYLOSEQ
+```
+
+
+If you take a look at `vst_assay`, you will notice that there are many negative values- these are representative of values that were 0 in the original “raw” count matrix. "Negative values are expected: if the common-scale counts are expected to be between 0 and 1, then on the log2 scale these are negative values. Remember these are not counts, but normalized and transformed counts." [bottom comment](https://support.bioconductor.org/p/63229/)
+
+A couple steps need to be done before exploratory analysis and ordination with transformed counts. More on this in Section 5.4 [here](https://bioconductor.org/packages/devel/bioc/vignettes/phyloseq/inst/doc/phyloseq-FAQ.html#i-dont-know-how-to-test-for-differential-abundance-now.-how-do-i-do-that)
+
+
+Step 3: Structure matrix so it can be used. Need to remove negative values before calculating certain distances (Bray-Curtis, Weighted Unifrac...)
+```{r}
+#set to zero all values less than zero.
+vst_assay[vst_assay < 0.0] <- 0
+```
+
+Step 4: merge DESeq dataset with phyloseq object
+```{r}
+#to stay consistent with set up of original phyloseq object we will need to rearrange vst_assay so ASVs are columns
+vst_assay <-(t(vst_assay))
+dim(vst_assay) #37 1001 same dimensions as original new_phylo
+otu_table(new_phylo0) <- otu_table(vst_assay, taxa_are_rows = FALSE)
+
+sum(taxa_sums(new_phylo0) == 0) #0
+sum(taxa_sums(new_phylo0) == 1) #0
+```
+
+
+Create a plot that shows relative symbiont composition across sites.
+
+```{r}
+#viewing variance normalized relative abundances on 100% scale
+vst_phylo.percent <- transform_sample_counts(new_phylo0, function(x){x / sum(x)})
+
+#saveRDS(vst_phylo.percent, file = "vst_phylo.rds")
+```
+
+Normalised Prevalence and Abundance 
+
+```{r}
+#vst_phylo.percent <- readRDS("vst_phylo.rds")
+
+#extract ASV table
+otu_table_data_vst <- otu_table(vst_phylo.percent)
+otu_table_data_vst <- t(otu_table_data_vst)
+
+#convert to data frames
+otu_df_vst <- as.data.frame(otu_table_data_vst)
+
+#ensure the row names (OTU IDs) match between the ASV and tax tables
+otu_df_vst$OTU <- rownames(otu_df_vst)
+```
+
+## Determining Prevalence and Relative Abundance of each ITS2 Type across samples that they are found in  
+```{r}
+#compute prevalence of each feature, store as df
+vst_prevdf = apply(X = otu_table(vst_phylo.percent),
+               MARGIN = ifelse(taxa_are_rows(vst_phylo.percent), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+#add taxonomy and total read counts to this df
+vst_prevdf = data.frame(Prevalence = vst_prevdf,
+                    TotalAbundance = taxa_sums(vst_phylo.percent),
+                    tax_table(vst_phylo.percent)) %>%
+  rownames_to_column() %>%
+  dplyr::rename(OTU='rowname')
+
+vst_prev_otu <- vst_prevdf %>%
+  left_join( otu_df_vst, by = "OTU") %>%
+  tidyr::pivot_longer(cols = 5:ncol(.), names_to = "Sample", values_to = "ASV_count_per_sample") %>%
+  filter(ASV_count_per_sample != 0) %>%
+  group_by(Sample) %>%
+  mutate(Total_reads_per_sample = sum(ASV_count_per_sample)) %>%
+  mutate(ITS2_diversity_per_sample = n_distinct(ITS2_type)) 
+
+# Compute total OTUs per sample 
+vst_otu_per_sample <- vst_prev_otu %>%
+    group_by(Sample) %>%
+    summarise(Total_OTUs = n_distinct(OTU))
+
+#find abundance of each ITS2 type that ASVs map to within each sample
+vst_prev_otu2 <- vst_prev_otu %>%
+  group_by(Sample, ITS2_type) %>%
+  mutate(Total_ITS2_count_per_sample = sum(ASV_count_per_sample)) %>%
+  mutate(abundance_per_sample = Total_ITS2_count_per_sample / Total_reads_per_sample) %>%
+  summarize(abundance_per_sample = mean(abundance_per_sample), .groups = "keep") %>%
+  ungroup()
+
+#find relative abundance of each ITS2 type across samples that it's found in (plus SE)
+vst_prev_otu3 <- vst_prev_otu2 %>%
+  group_by(ITS2_type) %>%
+  summarize(mean_abund = mean_se(abundance_per_sample)) %>%
+  mutate(se_abund = mean_abund$y - mean_abund$ymin) %>%
+  arrange(desc(mean_abund))
+
+#extract prevalence data for each ITS2 type (not just specific ASVs) and combine into df with relative abundance
+vst_prev_otu4 <- vst_prev_otu %>%
+  group_by(ITS2_type) %>%
+  mutate(Prevalence = n_distinct(Sample)) %>%
+  summarize(Prevalence = max(Prevalence)) %>%
+  left_join(prev_otu3, by = "ITS2_type") %>%
+  arrange(desc(Prevalence)) 
+
+write.csv(vst_prev_otu4, file = "vst_prevalence_abundance.csv")
+```
+
+# Create plot of VST normalised abundances
+
+#set up the data
+```{r}
+#make sure Possible_Species is part of the sample_data in phyloseq object
+sample_data_df <- as.data.frame(sample_data(vst_phylo.percent))
+sample_data_df$SampleID <- rownames(sample_data_df)  
+
+#update the site factor levels in sample_data based on site_order
+sample_data_df$Site <- factor(sample_data_df$Site, levels = site_order$Site)
+
+#order data by Site (which follows site_order) and then by Possible_Species
+sample_data_df <- sample_data_df[order(sample_data_df$Site, sample_data_df$Possible_Species), ]
+
+#reorder SampleID levels to match the new order
+sample_data_df$SampleID <- factor(sample_data_df$SampleID, levels = sample_data_df$SampleID)
+
+#apply reordered sample data back to phyloseq object
+sample_data(vst_phylo.percent) <- sample_data(sample_data_df)
+```
+
+
+Layout so title is on top of combo plots
+```{r}
+# Define the colors for the facet titles
+facet_colors <- c(  
+  "MUI" = "#707070",  
+  "VLF" = "#707070",  
+  "BUN" = "#707070",  
+  "TAN" = "#E0E0E0",  
+  "LK/TR" = "#E0E0E0",  
+  "OSP" = "#E0E0E0",  
+  "COR" = "#404040"  
+)
+
+
+plot <- plot_bar(vst_phylo.percent, fill = "ITS2_type") +  
+  geom_bar(stat = "identity") +  
+  facet_grid2(  
+    ~ Site, scales = "free_x", 
+    strip = strip_themed(background_x = elem_list_rect(fill = facet_colors))  # Apply custom facet colors
+  ) +  
+  xlab("Samples") +  
+  ylab("Relative Abundance") +  
+  theme_bw() +  
+  theme(  
+    axis.text.x = element_blank(),  # Hide x-axis labels
+    axis.ticks.x = element_blank(),  # Hide x-axis ticks
+    panel.grid.major = element_blank(),  # Remove major grid lines
+    panel.grid.minor = element_blank(),  # Remove minor grid lines
+    strip.text = element_blank(),  # Remove facet titles
+    panel.border = element_blank(),  # Remove panel borders
+    plot.margin = margin(t = -100, r = 0, b = 0, l = 0),  # Remove top margin
+    legend.position = "right",  # Place legend on the right
+    legend.key.size = unit(0.5, "cm"),  
+    legend.text = element_text(size = 6),  
+    legend.title = element_text(size = 8)  
+  ) +  
+  scale_fill_manual(values = ASV_colors) +  
+  labs(fill = expression(italic("Cladocopium") ~ "taxa")) +  
+  geom_text(
+    data = sample_data_df,
+    aes(x = SampleID, y = -0.01, label = paste0("italic('", Possible_Species, "')")),
+    size = 2, angle = 90, hjust = 1, vjust = 0.6, inherit.aes = FALSE, parse = TRUE
+  )
+
+# Print the plot
+print(plot)
+
+# Save the plot
+#ggsave("vst_abundance.png", plot, width = 7, height = 7, units = "in")
+
+```
+
+Include a separate plot to show temperature range across sites
+```{r}
+
+# Read the CSV file
+gen_site <- read_csv("General_Site.csv") %>%
+  mutate(
+    longitude = as.numeric(longitude),
+    latitude = as.numeric(latitude),
+    Site = as.factor(Site)  # Ensure Site is a factor
+  ) %>%
+  select(1:11) %>%  # Select columns 1 to 11
+  slice(1:7) 
+
+
+# Update 'Site' factor levels to reflect the desired order based on 'site_order'
+gen_site$Site <- factor(gen_site$Site, levels = site_order$Site)
+
+# Create plot1 with custom facet colors
+plot1 <- ggplot(gen_site, aes(x = Site, y = 1, fill = clim_temp_range_c)) +  
+  geom_bar(stat = "identity") +  
+  scale_fill_gradientn(colors = gradient_colors) +  # Use the predefined gradient_colors  
+  theme_minimal() +  
+  theme(  
+    strip.text = element_text(face = "bold", size = 11, colour = "white"),  # Facet label text with bold, white color  
+    axis.text.x = element_blank(),  # Remove x-axis text  
+    axis.text.y = element_blank(),  # Remove y-axis text  
+    axis.title.x = element_blank(),  # Remove x-axis title  
+    axis.title.y = element_blank(),  # Remove y-axis title  
+    legend.position = "right",  # Position the legend to the right  
+    legend.title = element_text(size = 8),  
+    legend.text = element_text(size = 6),  
+    panel.grid.major = element_blank(),  # Remove major grid lines  
+    panel.grid.minor = element_blank(),  # Remove minor grid lines  
+    panel.border = element_blank(), # Remove panel borders  
+    plot.margin = margin(t = 0, r = 0, b = -10, l = 0),
+  ) +  
+  facet_grid2(  # Apply facet coloring
+    ~ Site, 
+    scales = "free_x", 
+    strip = strip_themed(background_x = elem_list_rect(fill = facet_colors))  # Apply custom facet colors
+  ) +  
+  labs(fill = "Temperature Range (°C)") +  
+  guides(  
+    fill = guide_colorbar(direction = "horizontal",  
+                          barwidth = 3, barheight = 0.5,  
+                          label.position = "bottom")  # Make the gradient bar horizontal  
+  )  
+
+# Print the plot
+print(plot1)
+```
+
+
+###########################################
+To figure out what hue of blue was used for temp range
+```{r}
+# Create a color mapping function based on the clim_temp_range_c values
+color_map <- colorRampPalette(gradient_colors)
+
+# Apply the color mapping function to the clim_temp_range_c values for each site
+# The color mapping will be based on the unique values in clim_temp_range_c
+gen_site$color_mapped <- color_map(length(unique(gen_site$clim_temp_range_c)))[as.factor(gen_site$clim_temp_range_c)]
+
+# Print the colors for each site with clim_temp_range_c
+print(gen_site[, c("Site", "clim_temp_range_c", "color_mapped")])
+
+```
+
+```{r}
+#clim_colors <- c("#00008B", "#3948A9", "#7390C7", "#566CB8", "#1C249A", "#ADD8E6", "#90B3D6")
+```
+##################################
+
+
+```{r}
+library(patchwork)
+
+combined_plot <- plot1 / plot + 
+  plot_layout(heights = c(1, 30))  # Adjust the relative heights
+
+# Print the combined plot
+print(combined_plot)
+
+
+# Optionally, save the combined plot
+ggsave("combined_vst_abund_plot1.png", combined_plot, width = 7, height = 7.2, units = "in")
+
+```
+
+# VST and differential abundance testing using formula
+
+For Beta diversity
+
+Proceeding with the most influential factor from exploratory analysis (Site)
+
+```{r}
+dds1 <- phyloseq_to_deseq2(new_phylo, ~ Site)
+dds1
+```
+
+```{r}
+counts1 <-counts(dds1)
+#See which count values are > 0
+counts(dds1) > 0
+
+
+dim(dds1) 
+#remove ASVs with no reads
+keep1 <-rowSums(counts(dds1)) > 0
+dds1 <- dds1[keep1, ]
+dim(dds1) #still the same , all ASVs had reads
+```
+
+```{r}
+gm_mean <- function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans1 <- apply(counts(dds1), 1, gm_mean) #counts function in deseq2 package
+dds1 <- estimateSizeFactors(dds1, geoMeans = geoMeans1)
+```
+
+`DESeq()` does the rest of the testing for differential expression (abundance), in this case with default testing framework, but you can actually use alternatives. 
+
+*Note:* The default multiple-inference correction is Benjamini-Hochberg, and occurs within the `DESeq` function.
+```{r}
+dds_l1 <- DESeq(dds1, fitType = "local")
+
+dds_p1 <- DESeq(dds1, fitType = "parametric") #to double check that local is still best fit?
+
+# Set up the plotting area to have 1 row and 2 columns
+par(mfrow = c(1, 2))
+
+plotDispEsts(dds_p1)
+title("Parametric Fit")
+
+plotDispEsts(dds_l1)
+title("Local Fit")
+
+# Reset plotting area to default
+par(mfrow = c(1, 1))
+
+#perform the variance-stabilizing transformation
+vst_dds1 <- varianceStabilizingTransformation(dds_l1, blind = TRUE)
+
+#to inspect this transformation
+head(assay(vst_dds1), 3)
+```
+
+Put vst data back into phyloseq
+```{r}
+#create copy of phyloseq object
+new_phylo1 <- new_phylo
+```
+
+The `assay` function is used to extract the matrix of transformed values.
+```{r}
+vst_assay1 <- assay(vst_dds1)
+#this will be variance stabilised OTU table to merge with ps object
+```
+
+
+```{r}
+#set to zero all values less than zero
+vst_assay1[vst_assay1 < 0.0] <- 0
+```
+
+Merge DESeq dataset with phyloseq object
+```{r}
+#to stay consistent with set up of original phyloseq object we will need to rearrange vst_assay so ASVs are columns
+vst_assay1 <-(t(vst_assay1))
+dim(vst_assay1) #37 1001 same dimensions as original new_phylo
+otu_table(new_phylo1) <- otu_table(vst_assay1, taxa_are_rows = FALSE)
+
+sum(taxa_sums(new_phylo1) == 0) #0
+sum(taxa_sums(new_phylo1) == 1) #0
+```
+
+Compute distance matrix 
+```{r}
+#set seed for reproducibility
+set.seed(711)
+
+#weighted unifrac
+vPorWUF1 <- UniFrac(new_phylo1, weighted = TRUE, normalized = TRUE, parallel = FALSE)
+```
+
+Perform **NMDS** odination on distance matrix 
+```{r}
+#set seed for reproducibility
+set.seed(711)
+
+#w unifrac
+v.Por.nmds1 <- ordinate(new_phylo1, method="NMDS", distance=vPorWUF1) #Stress: 0.1258899
+```
+
+View stress plot for weighted unifrac ordination. 
+```{r}
+png("stress_plot_unifrac.png", width = 7, height = 7, units = "in", res = 300) 
+stressplot(v.Por.nmds1)
+dev.off() 
+```
+
+## Beta Diversity: Homogeneity of Dispersion test
+
+```{r}
+#library(vegan)
+
+#set seed for reproducibility
+set.seed(711)
+
+#function to capture permutest results
+capture_permutest_results <- function(beta) {
+  result <- permutest(beta)
+  data.frame(
+    Factor = deparse(substitute(beta)),  #extracting the factor name
+    Df = result$tab[1, "Df"],
+    SumOfSqs = result$tab[1, "Sum Sq"],
+    MeanSq = result$tab[1, "Mean Sq"],
+    F = result$tab[1, "F"],
+    NPerm = result$tab[1, "N.Perm"],
+    Pr = result$tab[1, "Pr(>F)"]
+  )
+}
+
+#host
+beta_host <- betadisper(vPorWUF1, sample_data(new_phylo1)$Possible_Species, bias.adjust=TRUE)
+host_results <- capture_permutest_results(beta_host)
+
+#site
+beta_site <- betadisper(vPorWUF1, sample_data(new_phylo1)$Site, bias.adjust=TRUE)
+site_results <- capture_permutest_results(beta_site)
+
+#climatological temp range
+beta_clim <- betadisper(vPorWUF1, sample_data(new_phylo1)$clim_temp_range_c, bias.adjust=TRUE)
+clim_results <- capture_permutest_results(beta_clim)
+
+#heat stress events
+beta_stress <- betadisper(vPorWUF1, sample_data(new_phylo1)$DHW_8, bias.adjust=TRUE)
+stress_results <- capture_permutest_results(beta_stress)
+
+#warm season variability
+beta_warm <- betadisper(vPorWUF1, sample_data(new_phylo1)$warm_seas_var_c, bias.adjust=TRUE)
+warm_results <- capture_permutest_results(beta_warm)
+
+#recovery time
+beta_rec <- betadisper(vPorWUF1, sample_data(new_phylo1)$time_post_DHW, bias.adjust=TRUE)
+rec_results <- capture_permutest_results(beta_rec)
+
+#max SST
+beta_max <- betadisper(vPorWUF1, sample_data(new_phylo1)$max_SST_mean_c, bias.adjust=TRUE)
+max_results <- capture_permutest_results(beta_max)
+
+#combine results into one data frame
+results <- rbind(host_results, site_results, clim_results, stress_results, warm_results, rec_results, max_results)
+
+#write to CSV
+write.csv(results, file = "betadisper_results.csv", row.names = FALSE)
+```
+
+
+## Beta Diversity: Permutational Multivariate Analysis of Variance
+
+[PERMANOVA](https://onlinelibrary.wiley.com/doi/pdf/10.1002/9781118445112.stat07841) Using weighted unifrac distance matrix
+run PERMANOVA on individual factors and interactions; & Combine into a table
+
+PERMANOVA for single variables
+```{r}
+#load necessary libraries
+#library(dplyr)
+#library(knitr)
+
+#set seed for reproducibility
+set.seed(711)
+
+#perform adonis2 analysis
+ad_spp <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Possible_Species) 
+ad_warm <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$warm_seas_var_c) 
+ad_rec <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$time_post_DHW) 
+ad_lon <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Lon) 
+ad_lat <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Lat) 
+ad_dhw <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$DHW_8) 
+ad_site <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Site) 
+ad_clim <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$clim_temp_range_c) 
+ad_max <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$max_SST_mean_c)
+
+
+#function to extract values from adonis2 results
+extract_adonis2_results <- function(adonis_result) {
+  res <- adonis_result[1, c("Df", "SumOfSqs", "R2", "F", "Pr(>F)")]
+  colnames(res) <- c("Df", "SumOfSqs", "R_squared", "pseudo_F", "p_value")
+  return(res)
+}
+
+#extract individual results
+results_list <- lapply(list(ad_spp, ad_site, ad_clim, ad_warm, ad_dhw, ad_rec,  ad_lat, ad_lon, ad_max), extract_adonis2_results)
+```
+
+PERMANOVA for interactions
+```{r}
+#set seed for reproducibility
+set.seed(711)
+
+
+#perform adonis2 analysis for interactions
+ad_spp_site <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Possible_Species * sample_data(new_phylo1)$Site) 
+ad_spp_clim <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Possible_Species * sample_data(new_phylo1)$clim_temp_range_c) 
+ad_spp_warm <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Possible_Species * sample_data(new_phylo1)$warm_seas_var_c) 
+ad_spp_dhw <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Possible_Species * sample_data(new_phylo1)$DHW_8) 
+ad_spp_rec <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Possible_Species * sample_data(new_phylo1)$time_post_DHW) 
+ad_spp_lat <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Possible_Species * sample_data(new_phylo1)$Lat) 
+ad_spp_lon <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Possible_Species * sample_data(new_phylo1)$Lon)
+ad_spp_max <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$Possible_Species * sample_data(new_phylo1)$max_SST_mean_c)
+ad_clim_warm <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$clim_temp_range_c * sample_data(new_phylo1)$warm_seas_var_c)
+ad_clim_dhw <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$clim_temp_range_c * sample_data(new_phylo1)$DHW_8)
+ad_clim_rec <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$clim_temp_range_c * sample_data(new_phylo1)$time_post_DHW)
+ad_clim_max <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$clim_temp_range_c * sample_data(new_phylo1)$max_SST_mean_c)
+ad_clim_lat <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$clim_temp_range_c * sample_data(new_phylo1)$Lat) 
+ad_clim_lon <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$clim_temp_range_c * sample_data(new_phylo1)$Lon)
+ad_dhw_warm <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$DHW_8 * sample_data(new_phylo1)$warm_seas_var_c)
+ad_dhw_rec <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$DHW_8 * sample_data(new_phylo1)$time_post_DHW)
+ad_dhw_lat <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$DHW_8 * sample_data(new_phylo1)$Lat) 
+ad_dhw_lon <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$DHW_8 * sample_data(new_phylo1)$Lon)
+ad_dhw_max <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$DHW_8 * sample_data(new_phylo1)$max_SST_mean_c)
+ad_warm_rec <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$warm_seas_var_c * sample_data(new_phylo1)$time_post_DHW)
+ad_warm_lat <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$warm_seas_var_c * sample_data(new_phylo1)$Lat)
+ad_warm_lon <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$warm_seas_var_c * sample_data(new_phylo1)$Lon)
+ad_warm_max <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$warm_seas_var_c * sample_data(new_phylo1)$max_SST_mean_c)
+ad_rec_lat <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$time_post_DHW * sample_data(new_phylo1)$Lat)
+ad_rec_lon <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$time_post_DHW * sample_data(new_phylo1)$Lon)
+ad_rec_max <- adonis2(vPorWUF1 ~ sample_data(new_phylo1)$time_post_DHW * sample_data(new_phylo1)$max_SST_mean_c)
+
+
+#function to extract values from adonis2 interactions results
+extract_adonis2_results1 <- function(adonis_result) {
+  #extract the third row (interaction term row)
+  if (nrow(adonis_result) >= 3) {
+    res1 <- as.data.frame(adonis_result[3, c("Df", "SumOfSqs", "R2", "F", "Pr(>F)")])  #convert the result to a data frame
+    colnames(res1) <- c("Df", "SumOfSqs", "R_squared", "pseudo_F", "p_value")  #rename the columns
+    return(res1)
+  } else {
+    return(NULL)  #return NULL if there are fewer than 3 rows
+  }
+}
+
+
+#extract individual results for interaction effects
+interaction_effects_list <- lapply(list(ad_spp_site, ad_spp_clim, ad_spp_warm, ad_spp_dhw, ad_spp_rec, ad_spp_lat, ad_spp_lon, ad_spp_max, ad_clim_warm, ad_clim_dhw, ad_clim_rec, ad_clim_max, ad_clim_lat, ad_clim_lon, ad_dhw_warm, ad_dhw_rec, ad_dhw_lat, ad_dhw_lon, ad_dhw_max, ad_warm_rec, ad_warm_lat, ad_warm_lon, ad_warm_max, ad_rec_lat, ad_rec_lon, ad_rec_max), extract_adonis2_results1)
+```
+
+Combine results into a table
+```{r}
+#combine the individual and interaction results to data frames
+results <- do.call(rbind, results_list)
+interaction_results <- do.call(rbind, interaction_effects_list)
+
+#add the factor column for main effects
+results$Factor <- c("Host", "Site", "Temperature Range", "Warm Season Variability", "No. of Accum. Heat Stress Events (DHW ≥ 8°C-weeks)", "Recovery Time", "Latitude", "Longitude", "Max. Monthly Mean (MMM)")
+
+#add the factor column for interactions
+interaction_results$Factor <- c("Host:Site", "Host:Temp. Range", "Host:Warm Season Var.", "Host:No. Heat Events", "Host:Recovery", "Host:Latitude", "Host:Longitude", "Host:MMM", "Temp. Range:Warm Season Var.", "Temp. Range:No. Heat Events", "Temp. Range:Recovery", "Temp. Range:MMM", "Temp. Range:Latitude", "Temp. Range:Longitude", "No. Heat Events:Warm Season Var.", "No. Heat Events:Recovery", "No. Heat Events:Latitude", "No. Heat Events:Longitude", "No. Heat Events:MMM", "Warm Season Var.:Recovery", "Warm Season Var.:Latitude", "Warm Season Var.:Longitude", "Warm Season Var.:MMM", "Recovery:Latitude", "Recovery:Longitude", "Recovery:MMM")
+
+#combine individual and interactions into one dataframe
+final_results <- rbind(results, interaction_results)
+
+#reorder columns
+final_results <- final_results[, c("Factor", "Df", "SumOfSqs", "R_squared", "pseudo_F", "p_value")]
+
+#convert p_value to numeric and format
+final_results$p_value <- as.numeric(as.character(final_results$p_value))
+final_results <- final_results %>%
+  mutate(p_value = format.pval(p_value, digits = 3, eps = 0.001))
+
+#export the results to a CSV file
+write.csv(final_results, "adonis2_results_with_interactions.csv", row.names = FALSE)
+```
+
+## Now create NMDS plot 
+
+### Option 1:
+
+Includes Panel A = # of events DHW ≥ 8°C-weeks - Faceted by number of events, Panel B = Clim Temp Range - Faceted by Site, Panel C = Latitude - faceted by host species. All shaped by Species. Includes P-value from ANOVA for each single factor. NEED TO CHECK DISTRIBUTION FOR ELLIPSE
+
+
+```{r}
+#define site order based on latitude
+site_order <- c("MUI", "VLF", "BUN", "TAN", "LK/TR", "OSP", "COR")
+
+#reorder Site factor levels
+sample_data(new_phylo1)$Site <- factor(sample_data(new_phylo1)$Site, levels = site_order)
+
+#panel A: Number of Heat Stress Events
+plot_dhw <-plot_ordination(new_phylo1, v.Por.nmds1, type = "samples") +
+  geom_point(aes(color = DHW_8, shape = Possible_Species),
+             size = 5, stroke = 2, show.legend = TRUE) +
+  scale_color_manual(
+    values = dhw_colors,
+    name = "Number of Accumulated Heat Stress Events (DHW ≥ 8°C-weeks)"
+  ) +
+  geom_point(aes(fill = Site, shape = Possible_Species),
+             size = 3, stroke = 0.3, show.legend = TRUE) +
+  scale_fill_manual(
+    values = site_colors,
+    name = "Site"
+  ) +
+  scale_shape_manual(
+    values = c("P. lobata" = 21, "P. lutea" = 24), 
+    name = "Host Species"
+  ) +
+  stat_ellipse(aes(color = DHW_8), linetype = "dashed", size = 0.8, level = 0.95) +
+  facet_wrap(~ DHW_8, labeller = labeller(DHW_8 = label_value)) +
+  annotate("text", x = -0.4, y = -0.3, label = expression(italic(p) * "-value =" ~ 0.041), hjust = 0, size = 4) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.background = element_rect(fill = "white", color = "black"),
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold.italic"),
+    panel.spacing = unit(1, "lines"),
+    strip.background = element_rect(fill = "white", color = "black"), 
+    legend.position = "bottom"
+  ) +
+  guides(
+    color = guide_legend(order = 1, override.aes = list(size = 5, stroke = 2)),
+    fill = guide_legend(order = 2, override.aes = list(size = 3, shape = 21)),
+    shape = "none"
+  )
+
+
+#panel B: Climatological Temperature Range
+plot_clim <- plot_ordination(new_phylo1, v.Por.nmds1, type = "samples") +
+  geom_point(aes(color = clim_temp_range_c, shape = Possible_Species), size = 5, stroke = 3, show.legend = TRUE) +
+  scale_color_gradient(
+    low = gradient_colors[1],
+    high = gradient_colors[2],
+    name = "Temperature Range (°C)" 
+  ) +
+  scale_shape_manual(
+    values = c("P. lobata" = 21, "P. lutea" = 24)
+  ) +
+  stat_ellipse(type = "t", linetype = "dashed", size = 0.8, level = 0.95) +
+  facet_wrap(~ Site, labeller = labeller(Site = label_value)) +
+  annotate("text", x = -0.4, y = -0.3, label = expression(italic(p)*"-value ="~0.002), hjust = 0, size = 4) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.background = element_rect(fill = "white", color = "black"), 
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold.italic"), 
+    panel.spacing = unit(1, "lines"), 
+    strip.background = element_rect(fill = "white", color = "black"),
+    legend.position = "bottom"
+  ) +
+  guides(
+    shape = "none"
+  )
+
+
+#panel C: Latitude
+plot_latitude <- plot_ordination(new_phylo1, v.Por.nmds1, type = "samples") +
+  geom_point(aes(color = Lat, shape = Possible_Species),
+             size = 5, stroke = 2, show.legend = TRUE) +
+  scale_color_gradient(
+    low = "yellow",
+    high = "red",
+    name = "Latitude (°N)" 
+  ) + 
+  geom_point(aes(fill = Site, shape = Possible_Species),
+             size = 3, stroke = 0.3, show.legend = TRUE) +
+  scale_fill_manual(
+    values = site_colors,
+    name = "Site"
+  ) +
+  scale_shape_manual(
+    values = c("P. lobata" = 21, "P. lutea" = 24), 
+    name = "Morphologic Host Species"
+  ) +
+   stat_ellipse(aes(color = Lat), linetype = "dashed", size = 0.8, level = 0.95) +
+  facet_wrap(~ Possible_Species, labeller = labeller(Possible_Species = label_value)) +
+  annotate("text", x = -0.4, y = -0.3, label = expression(italic(p) * "-value =" ~ 0.036), hjust = 0, size = 4) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.background = element_rect(fill = "white", color = "black"),
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold.italic"),
+    panel.spacing = unit(1, "lines"),
+    strip.background = element_rect(fill = "white", color = "black"),
+    legend.position = "bottom"
+  ) +
+  guides(
+    color = guide_legend(order = 1, override.aes = list(size = 5, stroke = 2)),
+    fill = guide_legend(order = 2, override.aes = list(size = 3, shape = 21)),
+    shape = "none"
+  )
+
+
+#combine all panels with cowplot and bold labels
+combined_nmds_plot <- plot_grid(
+  plot_dhw, plot_clim, plot_latitude, 
+  labels = c("(a)", "(b)", "(c)"), 
+  ncol = 1,
+  align = "v", 
+  label_fontface = "bold"
+)
+
+#save the combined plot as PNG
+ggsave("combined_nmds.png", combined_nmds_plot, width = 15, height = 15, units = "in")
+
+```
+
+Option 2
+
+* Panel A: Site
+
+* Panel B: Temperature Range
+
+* Panel C: Heat Stress x Latitude (p-value = 0.001)
+
+```{r}
+#panel A: Site
+plot_site <- plot_ordination(new_phylo1, v.Por.nmds1, type = "samples") +
+  geom_point(aes(color = Site, shape = Possible_Species), size = 3, stroke = 3, show.legend = TRUE) +
+  scale_color_manual(
+    values = site_colors,
+    name = "Site" 
+  ) +
+  scale_shape_manual(
+    values = c("P. lobata" = 16, "P. lutea" = 17)
+  ) +
+  facet_wrap(~ Possible_Species, labeller = labeller(Possible_Species = label_value)) +
+  annotate("text", x = -0.4, y = -0.3, label = expression(italic(p)*"-value ="~0.004), hjust = 0, size = 5) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.background = element_rect(fill = "white", color = "black"), 
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold.italic", size = 12), 
+    panel.spacing = unit(1, "lines"), 
+    strip.background = element_rect(fill = "white", color = "black"),
+    legend.position = "bottom"
+  ) +
+  guides(
+    shape = "none"
+  )
+
+
+#panel B: Climatological Temperature Range
+plot_clim <- plot_ordination(new_phylo1, v.Por.nmds1, type = "samples") +
+  geom_point(aes(color = clim_temp_range_c, shape = Possible_Species), size = 3, stroke = 3, show.legend = TRUE) +
+  scale_color_gradient(
+    low = gradient_colors[1],
+    high = gradient_colors[2],
+    name = "Temperature Range (°C)" 
+  ) +
+  scale_shape_manual(
+    values = c("P. lobata" = 16, "P. lutea" = 17)
+  ) +
+  facet_wrap(~ Possible_Species, labeller = labeller(Possible_Species = label_value)) +
+  annotate("text", x = -0.4, y = -0.3, label = expression(italic(p)*"-value ="~0.002), hjust = 0, size = 5) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.background = element_rect(fill = "white", color = "black"), 
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold.italic", size = 12), 
+    panel.spacing = unit(1, "lines"), 
+    strip.background = element_rect(fill = "white", color = "black"),
+    legend.position = "bottom"
+  ) +
+  guides(
+    shape = "none"
+  )
+
+#panel C: Number of Heat Stress Events x Lat
+plot_lat <- plot_ordination(new_phylo1, v.Por.nmds1, type = "samples") +
+  geom_point(aes(color = DHW_8, shape = Possible_Species),
+             size = 3, stroke = 2, show.legend = TRUE) +
+  scale_color_manual(
+    values = dhw_colors,
+    name = "Number of Accumulated Heat Stress Events (DHW ≥ 8°C-weeks)"
+  ) +
+  geom_point(aes(fill = Lat, shape = Possible_Species),
+             size = 2, stroke = 0.3, show.legend = TRUE) +
+  scale_fill_gradient(
+    low = "yellow",
+    high = "red",
+    name = "Latitude (°N)" 
+  ) +
+  scale_shape_manual(
+    values = c("P. lobata" = 21, "P. lutea" = 24), 
+    name = "Morphologic Host Species"
+  ) +
+  facet_wrap(~ Possible_Species, labeller = labeller(Possible_Species = label_value)) +
+  annotate("text", x = -0.4, y = -0.3, label = expression(italic(p) * "-value =" ~ 0.001), hjust = 0, size = 5) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.background = element_rect(fill = "white", color = "black"),
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold.italic", size = 12),
+    panel.spacing = unit(1, "lines"),
+    strip.background = element_rect(fill = "white", color = "black"), 
+    legend.position = "bottom"
+  ) +
+  guides(
+    color = guide_legend(order = 1, override.aes = list(size = 5, stroke = 2)),
+    fill = guide_legend(order = 2, override.aes = list(size = 3, shape = 21)),
+    shape = "none"
+  )
+
+
+#combine all panels with cowplot and bold labels
+combined_nmds_plot <- plot_grid(
+  plot_site, plot_clim, plot_lat,
+  labels = c("(a)", "(b)", "(c)"), 
+  ncol = 1,
+  align = "v", 
+  label_fontface = "bold"
+)
+
+#save the combined plot as PNG
+ggsave("combined_nmds1.png", combined_nmds_plot, width = 12, height = 12, units = "in")
+```
+
+Now to see which symbiont taxa are driving these statistically significant differences. 
+
+# GLM in DESeq2 (differential abundance)
+
+Want to know: 
+
+* Significant Taxa: Identify which taxa have significant differences in abundance between sites.
+* Log Fold Change: Understand the direction and magnitude of change for each significant taxon.
+* help understand which taxa are driving the observed differences in community composition, complementing the results from NMDS, `betadisper`, and `adonis2`.
+
+**Steps to differential abundance analysis:**
+
+1. normalization
+2. model fitting
+3. hypothesis testing
+
+
+DESeq automatically creates names for coefficients of model and the can be extracted using resultsNames function
+```{r}
+resultsNames(dds_l1)
+#only shows comparisons between Bundegi and all other sites
+```
+To compare microbial taxa across all sites using DESeq2, need to perform pairwise comparisons between all site combinations. 
+
+
+## Pairwise Comparison
+
+Step 1: Identify Site levels
+```{r}
+levels(sample_data(new_phylo1)$Site) #NULL
+```
+
+Site was not treated as a factor, making it a factor now.
+```{r}
+sample_data(new_phylo1)$Site <- as.factor(sample_data(new_phylo1)$Site)
+#confirm the levels of the Site variable
+site_levels <- levels(sample_data(new_phylo1)$Site)
+```
+
+Step 2: Perform Pairwise Comparisons and Add Taxa Names:
+
+Use the `contrast` argument in the results function to perform pairwise comparisons between all site combinations. Gather the results including taxa names from the ITS2_type column.
+```{r}
+#perform pairwise comparisons and add taxa names
+comparisons <- combn(site_levels, 2, simplify = FALSE)
+
+result_list <- lapply(comparisons, function(x) {
+    contrast <- c("Site", x[1], x[2])
+    res <- results(dds_l1, contrast = contrast)
+    res <- res[order(res$padj, na.last = NA), ]  # Order by adjusted p-value
+    alpha = 0.05
+    sig_res <- res[which(res$padj < alpha), ]  # Filter significant results
+    sig_res <- cbind(as(sig_res, "data.frame"), as(tax_table(new_phylo1)[rownames(sig_res), ], "matrix"))
+    sig_res$Comparison <- paste(x[1], "vs", x[2])
+    sig_res$Taxa <- sig_res$ITS2_type
+    return(sig_res)
+})
+
+names(result_list) <- sapply(comparisons, function(x) paste(x, collapse = "_vs_"))
+
+
+#example to visualize results for a specific comparison
+res_BUN_vs_COR <- result_list[["BUN_vs_COR"]]
+head(res_BUN_vs_COR)
+```
+Rather than running and visualising the above example (res_Bundegi_vs_CoralBay) for every pairwise comparison individually, I want to make this efficient and easy to see in one plot.
+
+
+Step 3: Combine Results
+
+Combine all the significant results into one data frame for visualization.
+```{r}
+combined_results <- do.call(rbind, result_list)
+
+write.csv(combined_results, file = "sig_diff_abund.csv")
+```
+Then I want to arrange the pairwise plots by descending order in no. of significantly different taxa (ITS2_type). 
+
+
+Step 4: Count Significant Taxa
+
+Count the number of significant taxa for each comparison and sort the comparisons accordingly.
+```{r}
+comparison_counts <- combined_results %>%
+    dplyr::group_by(Comparison) %>%
+    dplyr::summarize(Count = n_distinct(Taxa)) %>%
+    dplyr::arrange(desc(Count))
+
+write.csv(comparison_counts, file = "comparison_counts.csv")
+
+sorted_comparisons <- comparison_counts$Comparison
+combined_results$Comparison <- factor(combined_results$Comparison, levels = sorted_comparisons)
+```
+
+Step 5: Visualize Using ggplot2 with Facets
+
+Facet by the pairwise comparisons in the sorted order.
+```{r}
+theme_set(theme_bw())
+
+#order Taxa (ITS2_type) by the maximum log2FoldChange for better visualization
+combined_results <- combined_results %>%
+    group_by(Taxa) %>%
+    mutate(MaxLog2FC = max(log2FoldChange, na.rm = TRUE)) %>%
+    ungroup() %>%
+    arrange(desc(MaxLog2FC)) %>%
+    mutate(Taxa = factor(Taxa, levels = unique(Taxa)))
+
+#title = "Differential Abundance of Taxa Across Pairwise Comparisons",
+p <- ggplot(combined_results, aes(x = log2FoldChange, y = Taxa, color = Taxa)) +
+  geom_vline(xintercept = 0.0, color = "gray", size = 0.5) +
+  geom_point(size = 4) +
+  facet_wrap(~ Comparison, scales = "free_y", ncol = 3) +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5),
+        strip.text = element_text(size = 10),
+        legend.position = "none") +
+  labs(
+       x = "Log2 Fold Change",
+       y = expression("Taxa (" * italic("Cladocopium") * " ASVs)")) + 
+       #color = expression(italic("Cladocopium") ~ "ASVs")) +
+  scale_color_manual(values = ASV_colors)
+
+#save the plot as a PNG file
+ggsave("differential_abundance_plot_sites.png", plot = p, width = 16, height = 16, units = "in")
+```
+
+### Notes about plot:
+
+* Panels are ordered from the comparison with the greatest number of significant taxa to the least, making it easy to compare the differential abundance of taxa across different site pairs.
+
+* Log2 Fold Change (x-axis):
+  * Positive Values: Indicates higher abundance of the taxa in the first site compared to the second site in the comparison.
+  * Negative Values: Indicates higher abundance of the taxa in the second site compared to the first site in the comparison.
+  * Zero Value: Indicates no change in abundance between the two sites.
+  
+* Taxa (y-axis):
+  * Each unique taxon (identified by ITS2_type) is plotted on the y-axis.
+  * Taxa with significant differential abundance are listed, and the color represents different ITS2 types.
+
+* Facets (Individual Panels):
+  * Each facet represents a pairwise comparison between two sites.
+  * The title of each facet indicates the sites being compared.
+
