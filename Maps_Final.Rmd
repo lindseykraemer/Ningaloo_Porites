@@ -1,0 +1,885 @@
+---
+title: "Maps_Ningaloo_Porites_Project"
+author: "Lindsey Kraemer"
+date: "2024-11-29"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Load packages #'packageVersion'
+```{r, echo=FALSE}
+library(tidyverse) #‘2.0.0’
+library(sf) #‘1.0.16’
+library(RColorBrewer) #‘1.1.3’
+library(ggspatial) #‘1.1.9’
+library(ggplot2) #‘3.5.1’
+library(cowplot) #‘1.1.3’
+library(gstat) #‘2.1.2’
+library(sp) #‘2.1.4’
+library(gridExtra) #‘2.3’
+library(scales) #‘1.3.0’
+
+theme_bw()
+```
+
+Read Shapefile
+```{r}
+#(https://www.naturalearthdata.com/downloads) 
+#Cite: Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com
+#public domain (https://www.naturalearthdata.com/about/terms-of-use/)
+world_map <- read_sf("Shapefiles/ne_110m_admin_0_countries/ne_110m_admin_0_countries.shp")
+
+#World Heritage Sites - get Ningaloo Coast Boundaries
+#(https://www.vliz.be/en/imis?module=dataset&dasid=8197)
+#license: https://creativecommons.org/licenses/by/4.0/
+unesco <- read_sf("Shapefiles/WorldMarineHeritageSites_v2/WorldMarineHeritageSites_v2.shp")
+```
+
+Extract Australia
+```{r}
+australia <- world_map[world_map$ADMIN == "Australia", ]
+```
+
+Extract UNESCO Ningaloo Coast
+```{r}
+ningaloo <- unesco[unesco$FULL_NAME == "Ningaloo Coast", ]
+```
+
+### Land definition was coarse from naturalearth data and didn't include Muiron Islands, so I created polygons on google earth engine to make sure that the Muiron Islands are included on maps. 
+
+Read in KML file with Muiron Islands coords and polygon of land
+```{r}
+#path to KML file
+#kml_file1 <- "Muirons.kml"
+
+#read the KML file
+#muirons <- st_read(kml_file1)
+
+#drop the Z dimension
+#muirons_2d <- st_zm(muirons, drop = TRUE, what = "ZM")
+
+#define the output shapefile path
+#shapefile_path1 <- "Shapefiles/Muirons.shp"
+
+#write to shapefile
+#st_write(muirons_2d, shapefile_path1)
+
+#read in shapefile
+muirons <- read_sf("Shapefiles/Muirons.shp")
+```
+
+Read in KML file that I made on Google Earth with study site coordinates
+```{r}
+#kml_file <- "project_sites.kml"
+
+#list all layers in the KML file
+#layers_info <- st_layers(kml_file)
+#print(layers_info)
+
+#directory to save the shapefiles
+#output_dir <- "~/Shapefiles/Sites"
+
+#read and write each layer
+#for (layer_name in layers_info$name) {
+  #read the layer
+#  layer_data <- st_read(kml_file, layer = layer_name)
+  
+  #convert 3D points to 2D (drop Z dimension)
+#  layer_data_2d <- st_zm(layer_data, drop = TRUE, what = "ZM")
+  
+  #define the output shapefile path
+#  shapefile_path <- file.path(output_dir, paste0(layer_name, ".shp"))
+  
+  #write the layer to a shapefile
+#  st_write(layer_data_2d, shapefile_path)
+  
+  #print a message
+#  cat("Converted layer:", layer_name, "to", shapefile_path, "\n")
+#}
+```
+
+Read Site Shapefiles
+```{r}
+#define paths to the site shapefiles
+shapefiles <- list(
+  "Site 1- BUN" = "Shapefiles/Sites/Site 1- Bundegi.shp",
+  "Site 2- VLF" = "Shapefiles/Sites/Site 2- VLF Bay.shp",
+  "Site 3- OSP" = "Shapefiles/Sites/Site 3- Osprey Bay.shp",
+  "Site 4- TAN" = "Shapefiles/Sites/Site 4- Tantabiddi.shp",
+  "Site 5- MUI" = "Shapefiles/Sites/Site 5- Muiron Islands.shp",
+  "Site 6- COR" = "Shapefiles/Sites/Site 6- Coral Bay.shp",
+  "Site 7- LK/TR" = "Shapefiles/Sites/Site 7- Turquoise Bay_Lakeside.shp"
+)
+
+#read the shapefiles
+site_layers <- lapply(shapefiles, st_read)
+
+#assign names to each layer
+names(site_layers) <- names(shapefiles)
+```
+
+Focusing in on study area (Ningaloo Coast)
+```{r}
+#define the bounding box for the Ningaloo area
+xmin <- 113.5
+xmax <- 114.5
+ymin <- -23.2
+ymax <- -21.5
+
+```
+
+Make sure shapefiles & layers align geographically
+```{r}
+target_crs <- st_crs(4326)
+
+#transform CRS for muirons shapefile
+if (st_crs(muirons) != target_crs) {
+  muirons <- st_transform(muirons, target_crs)
+}
+
+#transform CRS for ningaloo shapefile
+if (st_crs(ningaloo) != target_crs) {
+  ningaloo <- st_transform(ningaloo, target_crs)
+}
+
+#transform CRS for each site layer
+site_layers <- lapply(site_layers, function(layer) {
+  if (st_crs(layer) != target_crs) {
+    layer <- st_transform(layer, target_crs)
+  }
+  return(layer)
+})
+```
+
+To add in environmental metadata for sites
+```{r}
+#read the CSV file
+gen_site <- read_csv("General_Site.csv") %>%
+  mutate(
+    longitude = as.numeric(longitude),
+    latitude = as.numeric(latitude),
+    Site = as.factor(Site)  # Ensure Site is a factor
+  ) %>%
+  mutate(num_Site = paste(site_ID, Site, sep = " - ")) %>%
+  select(c(1:11, 15))
+
+#convert to an sf object
+gen_site_f <- st_as_sf(gen_site, coords = c("longitude", "latitude"), crs = 4326)
+```
+
+## Now to plot data...
+
+Maps of Individual Sites to better view where samples were collected
+```{r}
+#define color palette
+palette <- brewer.pal(n = 7, name = "Set1")
+site_colors <- c(
+  "Site 1- BUN" = palette[1],
+  "Site 2- VLF" = palette[2],
+  "Site 3- OSP" = palette[3],
+  "Site 4- TAN" = palette[4],
+  "Site 5- MUI" = palette[5],
+  "Site 6- COR" = palette[6],
+  "Site 7- LK/TR" = palette[7]
+)
+
+#define bounding boxes for each site
+bbox_list <- list(
+  "Site 1- BUN" = c(xmin = 114.155, xmax = 114.172, ymin = -21.862, ymax = -21.852),
+  "Site 2- VLF" = c(xmin = 114.167, xmax = 114.18, ymin = -21.799, ymax = -21.786),
+  "Site 3- OSP" = c(xmin = 113.828, xmax = 113.837, ymin = -22.245, ymax = -22.24),
+  "Site 4- TAN" = c(xmin = 113.966, xmax = 113.985, ymin = -21.908, ymax = -21.895),
+  "Site 5- MUI" = c(xmin = 114.325, xmax = 114.36, ymin = -21.692, ymax = -21.668),
+  "Site 6- COR" = c(xmin = 113.75, xmax = 113.77, ymin = -23.15, ymax = -23.123),
+  "Site 7- LK/TR" = c(xmin = 113.882, xmax = 113.913, ymin = -22.105, ymax = -22.035)
+)
+
+#function to create a plot for a general site
+create_site_plot <- function(site_name, bbox, num_points) {
+  ggplot() +
+    geom_sf(data = muirons, fill = "gray80", color = "gray50") +
+    geom_sf(data = ningaloo, fill = "lightblue", color = "blue", alpha = 0.1) +
+    geom_sf(data = site_layers[[site_name]], aes(fill = site_name), shape = 21, size = 2, alpha = 0.9, color = "black", stroke = 0.2) +
+    scale_fill_manual(values = site_colors[site_name]) +
+    coord_sf(crs = 4326, xlim = c(bbox["xmin"], bbox["xmax"]), ylim = c(bbox["ymin"], bbox["ymax"]), expand = FALSE) +
+    theme_minimal() +
+    labs(
+      title = paste(site_name, "(n =", num_points, ")"),
+      x = "Longitude",
+      y = "Latitude",
+      fill = "Site"
+    ) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 90, hjust = 1),
+      panel.grid.major = element_blank(), 
+      panel.grid.minor = element_blank(),  
+      axis.ticks = element_line(color = "black"),  
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 10),
+      panel.background = element_blank(),  
+      panel.border = element_rect(color = "black", fill = NA, size = 1) 
+    ) +
+    annotation_scale(location = "br", width_hint = 0.25, height = unit(0.2, "cm"), text_cex = 0.6) +
+    annotation_north_arrow(location = "tl", which_north = "true", 
+                           style = north_arrow_fancy_orienteering, height = unit(1, "cm"), width = unit(1, "cm"))
+}
+
+#function to create a plot for Site 6 with a different scale bar position
+create_site6_plot <- function(bbox, num_points) {
+  ggplot() +
+    geom_sf(data = muirons, fill = "gray80", color = "gray50") +
+    geom_sf(data = ningaloo, fill = "lightblue", color = "blue", alpha = 0.1) +
+    geom_sf(data = site_layers[["Site 6- COR"]], aes(fill = "Site 6- COR"), shape = 21, size = 2, color = "black", stroke = 0.2) +
+    scale_fill_manual(values = site_colors["Site 6- COR"]) +
+    coord_sf(crs = 4326, xlim = c(bbox["xmin"], bbox["xmax"]), ylim = c(bbox["ymin"], bbox["ymax"])) +
+    theme_minimal() +
+    labs(
+      title = paste("Site 6- COR (n =", num_points, ")"),
+      x = "Longitude",
+      y = "Latitude",
+      fill = "Site"
+    ) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 90, hjust = 1),
+      panel.grid.major = element_blank(),  
+      panel.grid.minor = element_blank(),  
+      axis.ticks = element_line(color = "black"),  
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 10),
+      panel.background = element_blank(),  
+      panel.border = element_rect(color = "black", fill = NA, size = 1) 
+    ) +
+    annotation_scale(location = "bl", width_hint = 0.25, height = unit(0.2, "cm"), text_cex = 0.6) +
+    annotation_north_arrow(location = "tl", which_north = "true", 
+                           style = north_arrow_fancy_orienteering, height = unit(1, "cm"), width = unit(1, "cm"))
+}
+
+#create plots for each site and store them in a list
+site_plots <- list()
+for (site_name in names(bbox_list)) {
+  num_points <- nrow(st_drop_geometry(site_layers[[site_name]]))  #count number of points for each site
+  if (site_name == "Site 6- COR") {
+    plot <- create_site6_plot(bbox_list[[site_name]], num_points)
+  } else {
+    plot <- create_site_plot(site_name, bbox_list[[site_name]], num_points)
+  }
+  site_plots[[site_name]] <- plot
+}
+
+print(site_plots)
+
+
+#save each plot as a page in a PDF
+pdf("site_plots.pdf", width = 8.5, height = 11)
+for (plot in site_plots) {
+  print(plot)
+}
+dev.off()
+```
+
+### Supplementary Figure - Combine the supplementary site plots in a grid
+```{r}
+combined_plot <- plot_grid(plotlist = site_plots, ncol = 2, align = "v")
+
+#display the combined plot
+print(combined_plot)
+
+#save the combined plot as an image
+ggsave("combined_site_plots.png", combined_plot, width = 12, height = 18, units = "in")
+```
+
+# Mapping Environmental Factors
+
+## Climatological Temp Range
+
+```{r}
+#load data
+clim_data <- read.csv("clim_range_results_bounding_box.csv")
+
+#define a custom gradient for better contrast
+gradient_colors <- c("blue", "yellow", "red") 
+
+#create the plot
+plot_clim_range <- ggplot() +
+    geom_tile(data = clim_data, aes(x = Lon, y = Lat, fill = Clim_Range)) +
+    
+    #land and base map layers
+    geom_sf(data = muirons, fill = "gray80", color = "gray50") +
+    geom_sf(data = ningaloo, fill = "lightblue", color = "blue", alpha = 0.1) +
+    
+    #labels
+    geom_text(data = gen_site, aes(x = longitude, y = latitude, label = Site), 
+               size = 3, fontface = "bold") +
+    
+    #enhanced gradient color scale
+    scale_fill_gradientn(
+        colors = gradient_colors, 
+        name = "Climatological Temperature Range (°C)",  
+        labels = scales::number_format(accuracy = 0.01)  
+    ) +
+    
+    #coordinate system and map extent
+    coord_sf(crs = 4326, xlim = c(113.7, 114.4), ylim = c(-23.15, -21.7)) +
+    
+    #theme adjustments
+    theme(
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_line(color = "black"),
+        axis.title = element_text(size = 8),
+        axis.text = element_text(size = 8),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0),
+        panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        legend.position = "bottom",
+        legend.box = "vertical",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8)
+    ) +
+    annotation_scale(location = "br", width_hint = 0.5) +
+    annotation_north_arrow(location = "tl", which_north = "true", 
+                           style = north_arrow_fancy_orienteering)
+
+print(plot_clim_range)
+```
+
+There is missing data or areas where data isn't available due to limitations in observations or model coverage... None of these areas are overlapping with study sites but for the sake of having complete maps, will use Kriging interpolation to help fill these gaps. 
+
+Kriging Interpolation - predicts values for these missing locations by leveraging spatial relationships in the available data, providing a complete surface for visualization or analysis. Unlike many other interpolation techniques, Kriging provides an estimate of uncertainty (variance) for each prediction. 
+
+Kriging Interpolation:
+
+Building a Kriging model with gstat and predicted interpolated values.
+```{r}
+#convert the data into a spatial object using 'sp'
+coordinates(clim_data) <- ~Lon+Lat
+proj4string(clim_data) <- CRS("+proj=longlat +datum=WGS84")
+
+#generate the full grid for interpolation using 'epand.grid'
+lon_full <- seq(min(clim_data$Lon, na.rm = TRUE), max(clim_data$Lon, na.rm = TRUE), by = 0.05)
+lat_full <- seq(min(clim_data$Lat, na.rm = TRUE), max(clim_data$Lat, na.rm = TRUE), by = 0.05)
+full_grid <- expand.grid(Lon = lon_full, Lat = lat_full)
+
+#convert the full grid to a SpatialPointsDataFrame
+coordinates(full_grid) <- ~ Lon + Lat
+proj4string(full_grid) <- CRS("+proj=longlat +datum=WGS84")
+
+#perform Kriging interpolation
+kriging_model <- gstat(formula = Clim_Range ~ 1, data = clim_data, nmax = 10)
+kriging_result <- predict(kriging_model, newdata = full_grid)
+
+#convert results to a data frame
+kriging_filled <- as.data.frame(kriging_result)
+
+#save the interpolated dataset
+write.csv(kriging_filled, "kriging_filled_clim_range_results.csv", row.names = FALSE)
+```
+
+Call in model
+```{r}
+kriging_data_c <- read.csv("kriging_filled_clim_range_results.csv")
+
+#check the structure of the data
+str(kriging_data_c)
+summary(kriging_data_c)
+
+#define custom gradient colors
+gradient_colors <- c("blue", "yellow", "red")
+
+#create the plot with the original bounding box
+plot_kriging_clim <- ggplot() +
+    geom_tile(data = kriging_data_c, aes(x = Lon, y = Lat, fill = var1.pred)) +
+    geom_sf(data = muirons, fill = "gray80", color = "gray50") +
+    geom_sf(data = ningaloo, fill = "lightblue", color = "blue", alpha = 0.1) +
+    geom_text(data = gen_site, aes(x = longitude, y = latitude, label = Site),
+              size = 3, fontface = "bold") +
+    scale_fill_gradientn(
+        colors = gradient_colors, 
+        name = "Temperature Range (°C)",  
+        labels = scales::number_format(accuracy = 0.01) 
+    ) +
+    coord_sf(crs = 4326, xlim = c(113.7, 114.4), ylim = c(-23.15, -21.7)) +
+    labs(
+        title = "(b)",
+        x = NULL,
+        y = NULL
+    ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_line(color = "black"),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 8),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0),
+    panel.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 8)
+  ) +
+  annotation_scale(location = "br", width_hint = 0.5) +
+  annotation_north_arrow(location = "tl", which_north = "true", 
+                         style = north_arrow_fancy_orienteering)
+
+print(plot_kriging_clim)
+```
+
+## Warm Season Variability
+
+```{r}
+#load the warm_season_results_bounding_box.csv data
+warm_season_data <- read.csv("warm_season_results_bounding_box.csv")
+
+warm_season_data <- warm_season_data[warm_season_data$Warm_Season_Var > 0, ]
+
+
+#define a custom gradient for better contrast
+gradient_colors <- c("blue", "yellow", "red")  
+
+#create the plot
+plot_warm_season <- ggplot() +
+    geom_tile(data = warm_season_data, aes(x = Lon, y = Lat, fill = Warm_Season_Var)) +
+    geom_sf(data = muirons, fill = "gray80", color = "gray50") + 
+    geom_sf(data = ningaloo, fill = "lightblue", color = "blue", alpha = 0.1) +  
+    geom_text(data = gen_site, aes(x = longitude, y = latitude, label = Site),
+              size = 3, fontface = "bold") +
+  
+    #enhanced gradient color scale
+    scale_fill_gradientn(
+        colors = gradient_colors, 
+        name = "Warm Season Variability (°C)",
+        labels = scales::number_format(accuracy = 0.01) 
+    ) +
+    
+    #coordinate system and map extent
+    coord_sf(crs = 4326, xlim = c(113.7, 114.4), ylim = c(-23.15, -21.7)) +
+    
+    #theme adjustments
+    theme(
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.ticks = element_line(color = "black"),
+        axis.title = element_text(size = 8),
+        axis.text = element_text(size = 8),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0),
+        panel.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        legend.position = "bottom",
+        legend.box = "vertical",
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8)
+    ) +
+    annotation_scale(location = "br", width_hint = 0.5) +
+    annotation_north_arrow(location = "tl", which_north = "true", 
+                           style = north_arrow_fancy_orienteering)
+
+
+print(plot_warm_season)
+```
+
+Now doing a Kriging interpolation.
+```{r}
+#load the warm_season_results_bounding_box.csv data
+warm_season_data <- read.csv("warm_season_results_bounding_box.csv")
+
+#convert the data into a spatial object
+coordinates(warm_season_data) <- ~Lon+Lat
+proj4string(warm_season_data) <- CRS("+proj=longlat +datum=WGS84")
+
+#generate a regular grid for interpolation
+lon_full <- seq(min(warm_season_data$Lon, na.rm = TRUE), max(warm_season_data$Lon, na.rm = TRUE), by = 0.05)
+lat_full <- seq(min(warm_season_data$Lat, na.rm = TRUE), max(warm_season_data$Lat, na.rm = TRUE), by = 0.05)
+full_grid <- expand.grid(Lon = lon_full, Lat = lat_full)
+
+#convert the full grid to a SpatialPointsDataFrame
+coordinates(full_grid) <- ~Lon+Lat
+proj4string(full_grid) <- CRS("+proj=longlat +datum=WGS84")
+
+#perform Kriging interpolation
+kriging_model <- gstat(formula = Warm_Season_Var ~ 1, data = warm_season_data, nmax = 10)
+kriging_result <- predict(kriging_model, newdata = full_grid)
+
+#convert the results to a data frame
+kriging_filled <- as.data.frame(kriging_result)
+
+#save the interpolated dataset
+write.csv(kriging_filled, "kriging_filled_warm_season_results.csv", row.names = FALSE)
+
+#later on can load the interpolated dataset for visualisation...
+kriging_data <- read.csv("kriging_filled_warm_season_results.csv")
+
+#inspect the structure of the data
+str(kriging_data)
+summary(kriging_data)
+
+#plot the interpolated results
+gradient_colors <- c("blue", "yellow", "red") 
+
+plot_kriging_warm <- ggplot() +
+  geom_tile(data = kriging_data, aes(x = Lon, y = Lat, fill = var1.pred)) +
+  geom_sf(data = muirons, fill = "gray80", color = "gray50") +  
+  geom_sf(data = ningaloo, fill = "lightblue", color = "blue", alpha = 0.1) + 
+    geom_text(data = gen_site, aes(x = longitude, y = latitude, label = Site),
+              size = 3, fontface = "bold") +
+  scale_fill_gradientn(
+    colors = gradient_colors, 
+    name = "Warm Season Variability (°C)", 
+    labels = scales::number_format(accuracy = 0.01) 
+  ) +
+  
+  coord_sf(crs = 4326, xlim = c(113.7, 114.4), ylim = c(-23.15, -21.7)) +
+  
+    labs(
+        title = "(c)",
+        x = NULL,
+        y = NULL
+    ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_line(color = "black"),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 8),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0),
+    panel.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 8)
+  ) +
+  annotation_scale(location = "br", width_hint = 0.5) +
+  annotation_north_arrow(location = "tl", which_north = "true", 
+                         style = north_arrow_fancy_orienteering)
+
+
+print(plot_kriging_warm)
+```
+
+## Maximum Monthly Mean
+
+```{r}
+#load the warmest month SST data
+warmest_month_data <- read.csv("warmest_month_sst_bounding_box.csv")
+
+#define gradient colors
+gradient_colors <- c("blue", "yellow", "red")
+
+#plot the warmest month SST
+plot_warmest_month <- ggplot() +
+  geom_tile(data = warmest_month_data, aes(x = Lon, y = Lat, fill = Warmest_Month_SST)) +
+  geom_tile(data = warmest_month_data %>% filter(Mask == 0), aes(x = Lon, y = Lat), fill = "gray90") +
+  geom_sf(data = muirons, fill = "gray80", color = "gray50") + 
+  geom_sf(data = ningaloo, fill = "lightblue", color = "blue", alpha = 0.1) + 
+  geom_text(data = gen_site, aes(x = longitude, y = latitude, label = Site), size = 3, fontface = "bold") +
+  scale_fill_gradientn(
+    colors = gradient_colors,
+    name = "Maximum Monthly Mean (°C)",
+    labels = scales::number_format(accuracy = 0.01)
+  ) +
+  
+  #coordinate system and bounding box
+  coord_sf(crs = 4326, xlim = c(113.7, 114.4), ylim = c(-23.15, -21.7)) +
+  
+  #theme adjustments
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_line(color = "black"),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 8),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0),
+    panel.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 8)
+  ) +
+  annotation_scale(location = "br", width_hint = 0.5) +
+  annotation_north_arrow(location = "tl", which_north = "true", style = north_arrow_fancy_orienteering)
+
+print(plot_warmest_month)
+```
+
+MMM Kriging interpolation
+```{r}
+#convert the data into a spatial object
+coordinates(warmest_month_data) <- ~Lon+Lat
+proj4string(warmest_month_data) <- CRS("+proj=longlat +datum=WGS84")
+
+#generate a regular grid for interpolation
+lon_full <- seq(min(warmest_month_data$Lon, na.rm = TRUE), max(warmest_month_data$Lon, na.rm = TRUE), by = 0.05)
+lat_full <- seq(min(warmest_month_data$Lat, na.rm = TRUE), max(warmest_month_data$Lat, na.rm = TRUE), by = 0.05)
+full_grid <- expand.grid(Lon = lon_full, Lat = lat_full)
+
+#convert the full grid to a SpatialPointsDataFrame
+coordinates(full_grid) <- ~Lon+Lat
+proj4string(full_grid) <- CRS("+proj=longlat +datum=WGS84")
+
+#perform Kriging interpolation
+kriging_model <- gstat(formula = Warmest_Month_SST ~ 1, data = warmest_month_data, nmax = 10)
+kriging_result <- predict(kriging_model, newdata = full_grid)
+
+#convert the results to a data frame
+kriging_filled <- as.data.frame(kriging_result)
+
+#save the interpolated dataset
+write.csv(kriging_filled, "kriging_filled_warmest_month_results.csv", row.names = FALSE)
+
+#load the interpolated dataset for visualization
+kriging_data <- read.csv("kriging_filled_warmest_month_results.csv")
+
+#inspect the structure of the data
+str(kriging_data)
+summary(kriging_data)
+
+#plot the interpolated results
+gradient_colors <- c("blue", "yellow", "red")  
+
+plot_kriging_warmest <- ggplot() +
+  geom_tile(data = kriging_data, aes(x = Lon, y = Lat, fill = var1.pred)) +
+  geom_sf(data = muirons, fill = "gray80", color = "gray50") + 
+  geom_sf(data = ningaloo, fill = "lightblue", color = "blue", alpha = 0.1) + 
+  geom_text(data = gen_site, aes(x = longitude, y = latitude, label = Site),
+            size = 3, fontface = "bold") +
+  scale_fill_gradientn(
+    colors = gradient_colors, 
+    name = "Maximum Monthly Mean (°C)",
+    labels = scales::number_format(accuracy = 0.01) 
+  ) +
+  coord_sf(crs = 4326, xlim = c(113.7, 114.4), ylim = c(-23.15, -21.7)) +
+    labs(
+        title = "(a)",
+        x = NULL,
+        y = NULL
+    ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_line(color = "black"),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 8),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0),
+    panel.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 1),
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 8)
+  ) +
+  annotation_scale(location = "br", width_hint = 0.5) +
+  annotation_north_arrow(location = "tl", which_north = "true", 
+                         style = north_arrow_fancy_orienteering)
+
+print(plot_kriging_warmest)
+```
+
+### Supplementary Figure- Combining all three plots
+```{r}
+#arrange the plots side by side
+combined_env_plots <- grid.arrange(
+  plot_kriging_warmest,
+  plot_kriging_clim,
+  plot_kriging_warm, 
+  ncol = 3
+)
+
+#save the combined plot as an image
+ggsave("combined_env_plots.png", combined_env_plots, width = 10, height = 6, units = "in")
+
+#inspect
+print(combined_env_plots)
+```
+
+
+## Figure 1
+
+Main map showing variables 
+```{r}
+library(ggnewscale)
+library(shadowtext)
+library(scico)
+
+dhw_colors <- c(
+  "1-3" = "#bdbdbd",
+  "3-6" = "#707070",
+  "6-9" = "#252525"
+)
+
+plot_kriging_clim <- ggplot() +
+  geom_tile(
+    data = kriging_data_c,
+    aes(x = Lon, y = Lat, fill = var1.pred)
+  ) +
+ scale_fill_gradientn(
+    colours = rev(scico::scico(5, palette = "batlow")),
+    values = scales::rescale(c(4.58, 4.9, 5.1, 5.3, 5.5, 5.8, 7.05)),
+    limits = c(4.58, 7.05),
+    breaks = c(4.6, 5.8, 7.0),
+    name = "Temperature Range (°C)",
+    labels = scales::number_format(accuracy = 0.1)
+  ) +
+  ggnewscale::new_scale_fill() +
+  geom_sf(data = muirons, fill = "#FFF4E1", color = "grey60") +
+  geom_sf(data = ningaloo, fill = NA, color = "#2C7FB8", linewidth = 0.6) +
+  geom_point(
+    data = gen_site,
+    aes(x = longitude, y = latitude, fill = factor(DHW_8)),
+    shape = 21,
+    size = 5,
+    color = "black",
+    stroke = 0.8
+  ) +
+ geom_shadowtext(
+    data = gen_site,
+    aes(x = longitude, y = latitude, label = Site),
+    size = 3.5,
+    fontface = "bold",
+    colour = "black",
+    bg.colour = "white",
+    bg.r = 0.12,
+    nudge_x = -0.07,
+    nudge_y = 0.01
+  ) +
+    scale_fill_manual(
+    values = dhw_colors,
+    name = "Number of Accumulated Heat Stress Events (DHW ≥ 8°C-weeks)",
+    guide = guide_legend(
+      override.aes = list(shape = 21, color = "black", size = 4),
+      order = 1
+    )
+  ) +
+  coord_sf(crs = 4326, xlim = c(113.6, 114.5), ylim = c(-23.15, -21.6)) +
+  labs(
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.ticks = element_line(color = "black"),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 8),
+    plot.title = element_text(size = 14, face = "bold", hjust = 0),
+    panel.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 8)
+  ) +
+  guides(
+    fill = guide_legend(override.aes = list(shape = 21, color = "black", size = 4))
+  ) +
+  annotation_scale(location = "br", width_hint = 0.5) +
+  annotation_north_arrow(
+    location = "tl",
+    which_north = "true",
+    style = north_arrow_fancy_orienteering
+  )
+
+print(plot_kriging_clim)
+```
+
+Create Fig. 1
+```{r}
+#define bounding box for Australia inset
+australia_xmin <- 112
+australia_xmax <- 155
+australia_ymin <- -44
+australia_ymax <- -10
+
+
+#create the inset plot without lat and lon
+inset_plot3 <- ggplot() +
+  geom_sf(data = australia, fill = "#FFF4E1", color = "black", size = 0.3) +
+  geom_rect(
+    aes(xmin = 112.9, xmax = 115, ymin = -23.9, ymax = -21.1),
+    color = "#2C7FB8", fill = NA, size = 0.8
+  ) +
+  coord_sf(
+    crs = 4326,
+    xlim = c(australia_xmin, australia_xmax),
+    ylim = c(australia_ymin, australia_ymax),
+    expand = FALSE
+  ) +
+  scale_x_continuous(
+    breaks = seq(115, 150, by = 10),
+    labels = function(x) paste0(x, "°E")
+  ) +
+  scale_y_continuous(
+    breaks = seq(-40, -10, by = 10),
+    labels = function(y) paste0(abs(y), "°S")
+  ) +
+  theme(
+  axis.text = element_text(size = 6),
+  axis.ticks = element_line(size = 0.2),
+  axis.title = element_blank(),
+  panel.grid = element_blank(),
+
+  panel.background = element_rect(fill = "white", colour = NA),   # panel
+  plot.background  = element_rect(fill = NA, colour = NA),   # WHOLE plot
+  panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5)
+)
+
+#add the inset plot
+final_plot_with_inset <- ggdraw() +
+  draw_plot(plot_kriging_clim) +
+  draw_plot(inset_plot3, x = 0.35, y = 0.12, width = 0.19, height = 0.19)
+  #x=0.55 if the inset plot should be outside of main map
+
+#save
+ggsave("final_plot_fig1.png", final_plot_with_inset, width = 9.5, height = 8, units = "in")
+
+print(final_plot_with_inset)
+```
+
+Figure out exact colours used in map for each site tile
+```{r}
+library(ggplot2)
+library(dplyr)
+
+#build the plot so ggplot computes the final tile colours
+gb <- ggplot_build(plot_kriging_clim)
+
+#first layer is geom_tile() layer
+tile_layer <- gb$data[[1]]
+
+#for each site, find the nearest kriging tile and extract its plotted fill colour
+site_hues <- gen_site %>%
+  rowwise() %>%
+  mutate(
+    nearest_tile = which.min((tile_layer$x - longitude)^2 + (tile_layer$y - latitude)^2),
+    tile_lon = tile_layer$x[nearest_tile],
+    tile_lat = tile_layer$y[nearest_tile],
+    tile_fill = tile_layer$fill[nearest_tile]
+  ) %>%
+  ungroup() %>%
+  select(Site, longitude, latitude, tile_lon, tile_lat, tile_fill)
+
+print(site_hues)
+
+#to save and use later
+gen_site$krig_hex <- site_hues$tile_fill
+```
+
+Color Scheme for temp gradient to carry over into phyloseq -> DESeq2 analysis
+```{r}
+gradient_colors<- c("#204C5F", "#97883D", "#A28B42", 	"#9F8A41", "#818231", "#F5A582", "#A68C44")
+```
+
